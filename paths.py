@@ -1,0 +1,54 @@
+"""Where Lookhere's files live, the same code whether it runs from source or as the packaged app.
+
+From source (your copy in tools/screen-explain): everything lives next to the code.
+Packaged (Lookhere.exe from the installer): bundled read-only files sit in the app's _internal
+folder; recordings, logs and config.json go to %LOCALAPPDATA%\\Lookhere, so updating or
+reinstalling the app never touches them.
+"""
+import glob
+import os
+import shutil
+import sys
+
+FROZEN = getattr(sys, "frozen", False)
+SRC = os.path.dirname(os.path.abspath(__file__))
+RES = getattr(sys, "_MEIPASS", SRC)
+DATA = os.path.join(os.environ.get("LOCALAPPDATA", SRC), "Lookhere") if FROZEN else SRC
+os.makedirs(DATA, exist_ok=True)
+
+try:
+    with open(os.path.join(RES, "VERSION"), encoding="utf-8") as _f:
+        VERSION = _f.read().strip()
+except OSError:
+    VERSION = "dev"
+
+# GPU speech needs ~2 GB of NVIDIA libraries: present in the source venv, not shipped in the installer.
+CUDA_DIRS = glob.glob(os.path.join(RES, "nvidia", "*", "bin")) + \
+    glob.glob(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", "*", "bin"))
+GPU_SPEECH = bool(CUDA_DIRS)
+
+
+def ffmpeg_exe():
+    bundled = os.path.join(RES, "ffmpeg.exe")
+    if os.path.exists(bundled):
+        return bundled
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    hits = glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\*FFmpeg*\*\bin\ffmpeg.exe"))
+    return hits[0] if hits else None
+
+
+def app_cmd():
+    """How to start the tray app itself (used for "Start with Windows")."""
+    if FROZEN:
+        return '"%s"' % sys.executable
+    return '"%s" "%s"' % (os.path.join(SRC, "venv", "Scripts", "pythonw.exe"), os.path.join(SRC, "screen_explain.py"))
+
+
+def worker_cmd(rec_dir, extra=()):
+    """The command that builds a recording (process.py), from source or from the packaged exe."""
+    if FROZEN:
+        return [sys.executable, "--worker", rec_dir, *extra]
+    py = os.path.join(SRC, "venv", "Scripts", "python.exe")
+    return [py, "-I", os.path.join(SRC, "process.py"), rec_dir, *extra]

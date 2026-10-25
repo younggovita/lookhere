@@ -1,0 +1,10 @@
+venv/
+build/
+dist/
+recordings/
+__pycache__/
+*.log
+config.json
+selftest.json
+theme-preview.png
+draw-check.png

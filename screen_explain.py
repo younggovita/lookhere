@@ -60,7 +60,7 @@ CONFIG = {
     "sounds": True,             # ding when the recording goes live
     "focus_window_title": "",  # fallback window title if the starting window has closed
     "update_repo": "younggovita/lookhere",  # GitHub repo whose releases the installed app updates from
-    "check_updates": True,
+    "check_updates": False,     # off for now: releases are in a private repo (see README)
     "mic": "",                  # microphone name; "" = the Windows default
     "theme": "auto",            # auto = white or black pill following Windows light/dark; or "dark" / "light"
     "video_encoder": "auto",    # auto picks the first that works: NVIDIA, AMD, Intel, then Windows' own
@@ -845,7 +845,8 @@ class App:
             pystray.MenuItem(lambda _: "Update to %s" % self.update_info["version"] if self.update_info else "",
                              lambda *_: self.events.put("install_update"), visible=lambda _: bool(self.update_info)),
             pystray.MenuItem(lambda _: "Check for updates (version %s)" % paths.VERSION,
-                             lambda *_: self.events.put(("check_update", True))),
+                             lambda *_: self.events.put(("check_update", True)),
+                             visible=lambda _: CONFIG["check_updates"]),
             pystray.MenuItem("Quit", lambda *_: self.events.put("quit")),
         ))
         self.icon.run_detached()

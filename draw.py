@@ -14,14 +14,74 @@ import time
 import traceback
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from pynput import mouse
 
 import hud
 
 user32 = hud.user32
 SHOW_FOR, FADE = 3.0, 0.6   # seconds a finished stroke stays, then fades
-WIDTH = 7                   # stroke width in px (plus a dark edge)
+WIDTH = 7                   # stroke width in px
+STYLE = "outline"           # edge: "outline" (thin dark edge), "shadow" (soft drop shadow) or "plain"
+SS = 2                      # strokes are drawn at 2x and scaled down: smooth, anti-aliased edges
+
+
+def smooth(points, passes=2):
+    """Steady the line like a drawing app: average out hand tremor (moving average over ~5 mouse
+    points), drop near-duplicates, then round off the corners (Chaikin), keeping both ends."""
+    if len(points) > 4:
+        k = 2
+        avg = []
+        for i in range(len(points)):
+            win = points[max(0, i - k):i + k + 1]
+            avg.append((sum(x for x, _ in win) / len(win), sum(y for _, y in win) / len(win)))
+        avg[0], avg[-1] = points[0], points[-1]
+        points = avg
+    pts = [points[0]]
+    for p in points[1:]:
+        if abs(p[0] - pts[-1][0]) + abs(p[1] - pts[-1][1]) >= 3:
+            pts.append(p)
+    if len(pts) > 1 and pts[-1] != points[-1]:
+        pts.append(points[-1])
+    for _ in range(passes):
+        if len(pts) < 3:
+            break
+        out = [pts[0]]
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            out += [(0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1), (0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1)]
+        out.append(pts[-1])
+        pts = out
+    return pts
+
+
+def stroke_layer(pts, lime, style=None):
+    """One stroke as an anti-aliased RGBA image; returns (image, x, y) of its top-left corner."""
+    style = style or STYLE
+    pts = smooth(pts)
+    pad = WIDTH + 14
+    x0, y0 = min(x for x, _ in pts) - pad, min(y for _, y in pts) - pad
+    w = int(max(x for x, _ in pts) + pad - x0) + 1
+    h = int(max(y for _, y in pts) + pad - y0) + 1
+    big = Image.new("RGBA", (w * SS, h * SS), (0, 0, 0, 0))
+    local = [((x - x0) * SS, (y - y0) * SS) for x, y in pts]
+
+    def line(img, colour, width, dy=0):
+        d = ImageDraw.Draw(img)
+        p = [(x, y + dy * SS) for x, y in local]
+        if len(p) > 1:
+            d.line(p, fill=colour, width=int(width * SS), joint="curve")
+        r = width * SS / 2
+        for x, y in (p[0], p[-1]):  # round caps
+            d.ellipse((x - r, y - r, x + r, y + r), fill=colour)
+
+    if style == "shadow":
+        sh = Image.new("RGBA", big.size, (0, 0, 0, 0))
+        line(sh, (0, 0, 0, 120), WIDTH + 2, dy=2)
+        big.alpha_composite(sh.filter(ImageFilter.GaussianBlur(5 * SS)))
+    elif style == "outline":
+        line(big, (12, 12, 12, 255), WIDTH + 3)
+    line(big, lime + (255,), WIDTH)
+    return big.resize((w, h), Image.LANCZOS), int(x0), int(y0)
 EX_BASE = 0x00080000 | 0x08000000 | 0x80 | 0x8  # LAYERED | NOACTIVATE | TOOLWINDOW | TOPMOST
 EX_CLICK_THROUGH = 0x00000020                    # TRANSPARENT
 user32.SetWindowLongW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_long]
@@ -50,8 +110,9 @@ class _Screen:
 
 
 class DrawLayer:
-    def __init__(self, on_stroke=None, on_error=None):
+    def __init__(self, on_stroke=None, on_error=None, blocked=None):
         self.on_stroke = on_stroke or (lambda: None)
+        self.blocked = blocked or (lambda x, y: False)  # e.g. presses on the status pill
         self.on_error = on_error or (lambda msg: None)
         self.active = False
         self.strokes = []     # dicts: points (screen px), done (time finished or None)
@@ -59,6 +120,7 @@ class DrawLayer:
         self.lock = threading.Lock()
         self.listener = None
         self.closed = False
+        self._cache = {}
         ready = threading.Event()
         threading.Thread(target=self._thread, args=(ready,), daemon=True, name="draw").start()
         ready.wait(5)
@@ -87,7 +149,7 @@ class DrawLayer:
         if button != mouse.Button.left:
             return
         with self.lock:
-            if pressed and self.active:
+            if pressed and self.active and not self.blocked(x, y):
                 self.current = {"points": [(x, y)], "done": None}
                 self.strokes.append(self.current)
             elif not pressed and self.current:
@@ -132,7 +194,9 @@ class DrawLayer:
         with self.lock:
             # drop strokes that have fully faded
             self.strokes = [s for s in self.strokes if s["done"] is None or now - s["done"] < SHOW_FOR + FADE]
-            snapshot = [(list(s["points"]), s["done"]) for s in self.strokes]
+            snapshot = [(s["points"] if s["done"] else list(s["points"]), s["done"]) for s in self.strokes]
+            if not self.strokes:
+                self._cache = {}
             active = self.active
             mode_changed, self.mode_changed = self.mode_changed, False
         busy = bool(snapshot)
@@ -173,7 +237,7 @@ class DrawLayer:
         fresh = scr.surface.size != (w, h)
         scr.surface.ensure(w, h)
         buf = np.ctypeslib.as_array(ctypes.cast(scr.surface.bits, ctypes.POINTER(ctypes.c_uint8)), shape=(h, w, 4))
-        pad = WIDTH + 6
+        pad = WIDTH + 16
         boxes = []
         for pts, done in strokes:
             if pts:
@@ -200,18 +264,22 @@ class DrawLayer:
             if a <= 0 or not pts:
                 continue
             local = [(x - m["left"] - rx0, y - m["top"] - ry0) for x, y in pts]
-            layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            d = ImageDraw.Draw(layer)
-            for colour, width in (((12, 12, 12), WIDTH + 4), (lime, WIDTH)):
-                if len(local) > 1:
-                    d.line(local, fill=colour + (255,), width=width, joint="curve")
-                r = width / 2
-                for x, y in (local[0], local[-1]):
-                    d.ellipse((x - r, y - r, x + r, y + r), fill=colour + (255,))
+            key = (id(pts), len(pts), done is not None, rx0, ry0)
+            cached = self._cache.get(key)
+            if cached is None:
+                cached = stroke_layer(local, lime)
+                if done is not None:  # finished: keep its image while it fades
+                    self._cache[key] = cached
+            layer, lx, ly = cached
+            layer = layer.copy() if a < 1 else layer
             if a < 1:
                 al = np.asarray(layer.getchannel("A"), dtype=np.float32) * a
                 layer.putalpha(Image.fromarray(al.astype(np.uint8)))
-            img.alpha_composite(layer)
+            # paste the stroke's box, clipped to the repainted region
+            cx0, cy0 = max(0, lx), max(0, ly)
+            cx1, cy1 = min(img.width, lx + layer.width), min(img.height, ly + layer.height)
+            if cx1 > cx0 and cy1 > cy0:
+                img.alpha_composite(layer.crop((cx0 - lx, cy0 - ly, cx1 - lx, cy1 - ly)), (cx0, cy0))
         arr = np.asarray(img)
         alpha = arr[:, :, 3:4].astype(np.uint16)
         out = buf[ry0:ry1, rx0:rx1]

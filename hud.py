@@ -40,6 +40,7 @@ THEMES = {
                   CHIP=(12, 12, 12)),
 }
 MODES = {}
+BUTTON_MODES = ("recording", "draw", "paused")  # modes that show the pencil button
 
 
 def apply_theme(name):
@@ -112,6 +113,9 @@ _proto(gdi32.GetDeviceCaps, ctypes.c_int, wt.HDC, ctypes.c_int)
 _proto(shcore.GetDpiForMonitor, ctypes.c_long, wt.HMONITOR, ctypes.c_int, ctypes.POINTER(wt.UINT),
        ctypes.POINTER(wt.UINT))
 _proto(dwmapi.DwmFlush, ctypes.c_long)
+_proto(user32.GetWindowLongW, ctypes.c_long, wt.HWND, ctypes.c_int)
+_proto(user32.SetWindowLongW, ctypes.c_long, wt.HWND, ctypes.c_int, ctypes.c_long)
+_proto(user32.SetWindowPos, wt.BOOL, wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT)
 _proto(winmm.timeBeginPeriod, wt.UINT, wt.UINT)
 
 
@@ -167,6 +171,11 @@ class Hud:
         self.right = ""          # e.g. the timer
         self.progress = None     # 0..1 or None
         self.level = 0.0         # mic level 0..1
+        self.pen_button = False  # show the clickable pencil (while recording)
+        self.pen_on = False      # pencil highlighted (drawing is on)
+        self.button_rect = None  # pencil's clickable box, screen px
+        self.pill_rect = None    # the pill's box, screen px
+        self._clickable = False
         self.visible = False
         self.shown_at = 0.0
         self.hide_at = None      # auto-hide deadline
@@ -283,6 +292,11 @@ class Hud:
                 k = ease_out((now - self.shown_at) / 0.24)
                 alpha, dy = k, -12 * (1 - k)
             state = (self.mode, self.title, self.subtitle, self.right, self.progress, self.level)
+        clickable = self.pen_button and state[0] in BUTTON_MODES
+        if clickable != self._clickable:  # click-through except while the pencil is offered
+            self._clickable = clickable
+            ex = user32.GetWindowLongW(self.hwnd, -20)
+            user32.SetWindowLongW(self.hwnd, -20, (ex & ~0x20) if clickable else (ex | 0x20))
         img, px, py = self._render(now, dy, *state)
         self._blit(img, px, py, int(255 * max(0.0, min(1.0, alpha))))
         return True
@@ -320,6 +334,8 @@ class Hud:
         w = TEXT_X + text_w + PAD_R
         if mode in ("recording", "mic"):
             w += 46
+        if self.pen_button and mode in BUTTON_MODES:
+            w += 44
         if right:
             w += fr.getlength("0:00:00" if len(right) > 5 else "00:00") / u + 14
         return max(300.0, w)
@@ -404,6 +420,12 @@ class Hud:
             r_img = self._text(right, fr, TEXT)
             img.alpha_composite(r_img, (int(rx - r_img.width), int(cy + 5.5 * s - r_img.info["ascent"])))
             rx -= r_img.width + 14 * s
+        button = None
+        if self.pen_button and mode in BUTTON_MODES:
+            bx = rx - 16 * s
+            self._pen_button(img, bx, cy)
+            button = (bx - 18 * s, cy - 18 * s, bx + 18 * s, cy + 18 * s)
+            rx -= 44 * s
 
         icon_kind, color = MODES.get(mode, ("dot", GREY))
         self._icon(img, icon_kind, color, x0 + ICON_X * s, cy, now)
@@ -415,7 +437,37 @@ class Hud:
         left, top, aw = self.anchor
         px = int(left + (aw - W) / 2)
         py = int(top + (14 + dy) * s - MARGIN * s + 6 * s)
+        self.button_rect = tuple(int(v) for v in (px + button[0], py + button[1], px + button[2], py + button[3])) \
+            if button else None
+        self.pill_rect = (int(px + x0), int(py + y0), int(px + x1), int(py + y0 + PILL_H * s))
         return img, px, py
+
+    def _pen_button(self, img, cx, cy):
+        """Round pencil button: subtle when off, lime when drawing."""
+        size = 34.0
+        patch, d, u = self._patch(size, size)
+        c = size / 2 * u
+        r = 15 * u
+        if self.pen_on:
+            d.ellipse((c - r, c - r, c + r, c + r), fill=ACCENT + (255,))
+            ink = (12, 12, 12)
+        else:
+            d.ellipse((c - r, c - r, c + r, c + r), fill=TEXT[:3] + (26,))
+            ink = TEXT[:3]
+        self._pen_glyph(d, c, u, ink)
+        s = self.scale
+        self._paste_patch(img, patch, cx - size / 2 * s, cy - size / 2 * s)
+
+    @staticmethod
+    def _pen_glyph(d, c, u, ink):
+        # a pencil, tilted: body, tip and a little nib
+        d.line([(c - 5.5 * u, c + 5.5 * u), (c + 5 * u, c - 5 * u)], fill=ink + (255,), width=round(3.6 * u))
+        d.polygon([(c - 7.6 * u, c + 7.6 * u), (c - 6.6 * u, c + 3.6 * u), (c - 3.6 * u, c + 6.6 * u)],
+                  fill=ink + (255,))
+
+    def bring_to_front(self):
+        """Keep the pill above other topmost windows (the drawing layer)."""
+        user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
 
     def _patch(self, w, h):
         """A small supersampled scratch layer; returns (image, draw, unit)."""
@@ -428,13 +480,13 @@ class Hud:
         img.alpha_composite(small, (int(round(x)), int(round(y))))
 
     def _icon(self, img, kind, color, cx, cy, now):
-        size = 30.0
+        size = 34.0  # 30px icon plus room so the chip's edge isn't clipped
         patch, d, u = self._patch(size, size)
         c = size / 2 * u
         R = 11 * u
         track = TEXT[:3] + (34,)
         if CHIP and kind in ("spinner", "key", "check"):
-            d.ellipse((0, 0, size * u, size * u), fill=CHIP + (255,))
+            d.ellipse((c - 15 * u, c - 15 * u, c + 15 * u, c + 15 * u), fill=CHIP + (255,))
             track = (255, 255, 255, 46)
             R = 9.5 * u if kind != "check" else 11.5 * u
         if kind == "spinner":
@@ -452,12 +504,10 @@ class Hud:
             for x in (-3.6, 3.6):
                 d.rounded_rectangle((c + x * u - 1.7 * u, c - 6.5 * u, c + x * u + 1.7 * u, c + 6.5 * u),
                                     radius=1.7 * u, fill=color + (255,))
-        elif kind == "pen":  # a felt-tip, tilted
+        elif kind == "pen":
             if CHIP:
-                d.ellipse((0, 0, size * u, size * u), fill=CHIP + (255,))
-            pts = [(c - 6 * u, c + 6 * u), (c + 5 * u, c - 5 * u)]
-            d.line(pts, fill=color + (255,), width=round(4.2 * u))
-            d.ellipse((c - 8.2 * u, c + 4.6 * u, c - 4.6 * u, c + 8.2 * u), fill=color + (255,))
+                d.ellipse((c - 15 * u, c - 15 * u, c + 15 * u, c + 15 * u), fill=CHIP + (255,))
+            self._pen_glyph(d, c, u, color)
         elif kind == "key":  # a keycap
             k = (7.5 if CHIP else 10) * u
             d.rounded_rectangle((c - k, c - k, c + k, c + k), radius=4 * u, outline=color + (255,), width=round(2.4 * u))

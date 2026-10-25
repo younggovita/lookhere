@@ -62,6 +62,7 @@ CONFIG = {
     "update_repo": "younggovita/lookhere",  # GitHub repo whose releases the installed app updates from
     "check_updates": False,     # off for now: releases are in a private repo (see README)
     "mic": "",                  # microphone name; "" = the Windows default
+    "draw_style": "outline",    # drawn marks: "outline", "shadow" or "plain"
     "theme": "auto",            # auto = white or black pill following Windows light/dark; or "dark" / "light"
     "video_encoder": "auto",    # auto picks the first that works: NVIDIA, AMD, Intel, then Windows' own
 }
@@ -361,6 +362,7 @@ class Recorder:
         self.pauses = []          # [start, end] stretches cut out when the recording is built
         self._pause_t = None
         self.drawing = False      # clicks made while drawing on screen aren't logged as clicks
+        self.ignore = getattr(self, "ignore", None) or (lambda x, y: False)  # clicks on the pill
         self.started_at = datetime.now()
         self.t0 = time.monotonic()
         self.active = True
@@ -442,7 +444,7 @@ class Recorder:
                 pass
 
     def _on_click(self, x, y, button, pressed):
-        if not pressed or not self.active or self.paused or self.drawing:
+        if not pressed or not self.active or self.paused or self.drawing or self.ignore(x, y):
             return
         t = self.elapsed()
         click = {"t": round(t, 2), "x": x, "y": y, "button": button.name, "window": foreground_title()}
@@ -833,6 +835,11 @@ class App:
                 for label, value in [("Windows default", "")] + [(n, n) for n in input_devices()]
             ] + [pystray.Menu.SEPARATOR,
                  pystray.MenuItem("Test microphone", lambda *_: self.events.put(("mic", None)))])),
+            pystray.MenuItem("Drawing style", pystray.Menu(*[
+                pystray.MenuItem(label, (lambda v: lambda *_: self.events.put(("draw_style", v)))(value),
+                                 checked=(lambda v: lambda _: CONFIG["draw_style"] == v)(value), radio=True)
+                for label, value in (("Thin dark edge", "outline"), ("Soft shadow", "shadow"),
+                                     ("Plain lime", "plain"))])),
             pystray.MenuItem("Start with Windows", lambda *_: self.events.put("toggle_autostart"),
                              checked=lambda _: autostart_enabled()),
             pystray.MenuItem("Theme", pystray.Menu(*[
@@ -919,7 +926,7 @@ class App:
                 self.hud.show("paused", "Paused", "%s to resume \u00b7 %s to finish"
                               % (self.label("pause_hotkey"), self.hotkey_label), right=timer)
             elif r.drawing:
-                self.hud.show("draw", "Drawing on screen", "Drag to draw \u00b7 %s when done"
+                self.hud.show("draw", "Drawing on screen", "Drag to draw \u00b7 pencil or %s when done"
                               % self.label("draw_hotkey"), right=timer)
             elif r.armed:
                 self.hud.show("recording", "Recording", "%s to finish \u00b7 Esc to cancel" % self.hotkey_label,
@@ -991,6 +998,11 @@ class App:
                 self.test_mic()
         elif isinstance(ev, tuple) and ev[0] == "mic_result":
             self._mic_result(*ev[1:])
+        elif isinstance(ev, tuple) and ev[0] == "draw_style":
+            save_setting("draw_style", ev[1])
+            import draw
+            draw.STYLE = ev[1]
+            self.icon.update_menu()
         elif ev == "toggle_autostart":
             on = not autostart_enabled()
             set_autostart(on)
@@ -1013,7 +1025,11 @@ class App:
 
     # ---------- actions ----------
     def start(self):
+        self.recorder.ignore = self.on_pill
         self.recorder.start()
+        self.hud.pen_button, self.hud.pen_on = True, False
+        self.pill_listener = mouse.Listener(on_click=self._pill_click)
+        self.pill_listener.start()
         self.dinged = False
         self.state = "recording"
         self._set_tray(REC)
@@ -1028,6 +1044,10 @@ class App:
         self.hud.show("arming", "Arming recording", "Starting the screen recorder · Esc to cancel")
 
     def _stop_esc(self):
+        self.hud.pen_button = self.hud.pen_on = False
+        if getattr(self, "pill_listener", None):
+            self.pill_listener.stop()
+            self.pill_listener = None
         if self.esc_listener:
             self.esc_listener.stop()
             self.esc_listener = None
@@ -1185,13 +1205,27 @@ class App:
         log("%s changed to %s" % (target, spec))
 
     # ---------- drawing on screen ----------
+    def on_pill(self, x, y):
+        r = self.hud.pill_rect
+        return bool(r and self.hud.pen_button and r[0] <= x <= r[2] and r[1] <= y <= r[3])
+
+    def _pill_click(self, x, y, button, pressed):
+        r = self.hud.button_rect
+        if pressed and r and r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+            self.events.put("draw")
+
     def toggle_draw(self):
         import draw
         if self.drawer is None:
-            self.drawer = draw.DrawLayer(on_stroke=lambda: self.recorder.mark("draw"), on_error=log)
+            self.drawer = draw.DrawLayer(on_stroke=lambda: self.recorder.mark("draw"), on_error=log,
+                                         blocked=self.on_pill)
+        draw.STYLE = CONFIG["draw_style"]
         on = not self.recorder.drawing
         self.recorder.drawing = on
         self.drawer.set_active(on)
+        self.hud.pen_on = on
+        if on:
+            threading.Timer(0.15, self.hud.bring_to_front).start()  # pill stays clickable above the ink
         log("drawing %s" % ("on" if on else "off"))
 
     # ---------- history ----------

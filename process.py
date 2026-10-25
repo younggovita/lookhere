@@ -601,7 +601,7 @@ def main():
             "`%s`" % os.path.join(rec, n) for n, ok in (("preview.mp4", has_video), ("preview.jpg", has_sheet)) if ok)
             or "none built"),
         "",
-        "## What he said",
+        "## What they said",
         "",
     ]
     lines += [full_text]

@@ -1210,9 +1210,12 @@ class App:
         return bool(r and self.hud.pen_button and r[0] <= x <= r[2] and r[1] <= y <= r[3])
 
     def _pill_click(self, x, y, button, pressed):
-        r = self.hud.button_rect
-        if pressed and r and r[0] <= x <= r[2] and r[1] <= y <= r[3]:
-            self.events.put("draw")
+        if not pressed:
+            return
+        for name, r in self.hud.buttons.items():
+            if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+                self.events.put({"draw": "draw", "stop": "toggle"}[name])
+                return
 
     def toggle_draw(self):
         import draw

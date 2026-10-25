@@ -173,7 +173,7 @@ class Hud:
         self.level = 0.0         # mic level 0..1
         self.pen_button = False  # show the clickable pencil (while recording)
         self.pen_on = False      # pencil highlighted (drawing is on)
-        self.button_rect = None  # pencil's clickable box, screen px
+        self.buttons = {}        # clickable boxes on the pill, screen px: {"draw": rect, "stop": rect}
         self.pill_rect = None    # the pill's box, screen px
         self._clickable = False
         self.visible = False
@@ -335,7 +335,7 @@ class Hud:
         if mode in ("recording", "mic"):
             w += 46
         if self.pen_button and mode in BUTTON_MODES:
-            w += 44
+            w += 88
         if right:
             w += fr.getlength("0:00:00" if len(right) > 5 else "00:00") / u + 14
         return max(300.0, w)
@@ -420,12 +420,13 @@ class Hud:
             r_img = self._text(right, fr, TEXT)
             img.alpha_composite(r_img, (int(rx - r_img.width), int(cy + 5.5 * s - r_img.info["ascent"])))
             rx -= r_img.width + 14 * s
-        button = None
+        boxes = {}
         if self.pen_button and mode in BUTTON_MODES:
-            bx = rx - 16 * s
-            self._pen_button(img, bx, cy)
-            button = (bx - 18 * s, cy - 18 * s, bx + 18 * s, cy + 18 * s)
-            rx -= 44 * s
+            for name in ("stop", "draw"):  # right to left: stop sits next to the timer
+                bx = rx - 16 * s
+                (self._stop_button if name == "stop" else self._pen_button)(img, bx, cy)
+                boxes[name] = (bx - 18 * s, cy - 18 * s, bx + 18 * s, cy + 18 * s)
+                rx -= 44 * s
 
         icon_kind, color = MODES.get(mode, ("dot", GREY))
         self._icon(img, icon_kind, color, x0 + ICON_X * s, cy, now)
@@ -437,8 +438,7 @@ class Hud:
         left, top, aw = self.anchor
         px = int(left + (aw - W) / 2)
         py = int(top + (14 + dy) * s - MARGIN * s + 6 * s)
-        self.button_rect = tuple(int(v) for v in (px + button[0], py + button[1], px + button[2], py + button[3])) \
-            if button else None
+        self.buttons = {k: (int(px + b[0]), int(py + b[1]), int(px + b[2]), int(py + b[3])) for k, b in boxes.items()}
         self.pill_rect = (int(px + x0), int(py + y0), int(px + x1), int(py + y0 + PILL_H * s))
         return img, px, py
 
@@ -455,6 +455,18 @@ class Hud:
             d.ellipse((c - r, c - r, c + r, c + r), fill=TEXT[:3] + (26,))
             ink = TEXT[:3]
         self._pen_glyph(d, c, u, ink)
+        s = self.scale
+        self._paste_patch(img, patch, cx - size / 2 * s, cy - size / 2 * s)
+
+    def _stop_button(self, img, cx, cy):
+        """Round stop button: a red square, like a recorder's stop key."""
+        size = 34.0
+        patch, d, u = self._patch(size, size)
+        c = size / 2 * u
+        r = 15 * u
+        d.ellipse((c - r, c - r, c + r, c + r), fill=TEXT[:3] + (26,))
+        k = 5.2 * u
+        d.rounded_rectangle((c - k, c - k, c + k, c + k), radius=1.8 * u, fill=RED + (255,))
         s = self.scale
         self._paste_patch(img, patch, cx - size / 2 * s, cy - size / 2 * s)
 

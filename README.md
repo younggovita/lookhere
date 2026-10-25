@@ -14,6 +14,7 @@ frames and transcript saved next to the video. A soft ding plays when recording 
 | **Ctrl+Alt+P** | pause / resume (paused stretches are cut out of the result) |
 | **Ctrl+Alt+M** | draw on screen: drag to make lime marks that show in the recording and fade after ~3 s |
 | pencil button on the pill | same as Ctrl+Alt+M: click to draw, click again to stop |
+| red stop button on the pill | same as Ctrl+Alt+H: finish the recording |
 | **Esc** | cancel and delete |
 
 All three shortcuts can be changed from tray > **Shortcuts** (press the new keys; ones another app

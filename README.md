@@ -30,7 +30,7 @@ light/dark mode (default), Always dark, Always light. `theme-preview.png` shows 
 - **History...**: every recording with a thumbnail, length and first words. Play, Copy, Trim,
   Folder, Delete (to the Recycle Bin). **Trim** shows the recording as a filmstrip with lime start
   and end handles; saving rebuilds the recording (video, transcript, frames) and copies it.
-- **Drawing style**: thin dark edge, soft shadow or plain lime (strokes are smoothed and anti-aliased)
+- **Drawing style**: soft shadow (default), thin dark edge or plain lime (strokes are smoothed and anti-aliased)
 - **Copy last recording again**
 - **Microphone**: Windows default or a specific mic; **Test microphone** shows a live meter.
 - **Start with Windows** (a per-user Run entry; the installer's checkbox sets the same thing)

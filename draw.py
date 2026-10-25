@@ -22,7 +22,7 @@ import hud
 user32 = hud.user32
 SHOW_FOR, FADE = 3.0, 0.6   # seconds a finished stroke stays, then fades
 WIDTH = 7                   # stroke width in px
-STYLE = "outline"           # edge: "outline" (thin dark edge), "shadow" (soft drop shadow) or "plain"
+STYLE = "shadow"            # edge: "outline" (thin dark edge), "shadow" (soft drop shadow) or "plain"
 SS = 2                      # strokes are drawn at 2x and scaled down: smooth, anti-aliased edges
 
 

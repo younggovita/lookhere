@@ -62,7 +62,7 @@ CONFIG = {
     "update_repo": "younggovita/lookhere",  # GitHub repo whose releases the installed app updates from
     "check_updates": False,     # off for now: releases are in a private repo (see README)
     "mic": "",                  # microphone name; "" = the Windows default
-    "draw_style": "outline",    # drawn marks: "outline", "shadow" or "plain"
+    "draw_style": "shadow",     # drawn marks: "shadow" (default), "outline" or "plain"
     "theme": "auto",            # auto = white or black pill following Windows light/dark; or "dark" / "light"
     "video_encoder": "auto",    # auto picks the first that works: NVIDIA, AMD, Intel, then Windows' own
 }

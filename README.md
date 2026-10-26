@@ -82,9 +82,13 @@ venv\Scripts\python.exe build.py --bump --test --publish --notes "What changed"
 - **Installed vs this folder**: the installer ships CPU speech (any PC; the ~460 MB model
   downloads on first launch). This folder's copy also has GPU speech and never self-updates.
   Video encoding uses NVIDIA, AMD or Intel, or Windows' own on anything else.
-- **Before sharing widely**: unsigned apps get a "Windows protected your PC" warning (a paid
-  code-signing certificate removes it); the bundled ffmpeg is GPL, so public distribution
-  needs its licence and source offer.
+- **First run on another PC**: the installer isn't code-signed (by choice: a certificate costs
+  money every year), so Windows shows "Windows protected your PC". Click **More info**, then
+  **Run anyway**. It only asks once.
+- **Licences**: `make_licenses.py` (run by the build) writes `licenses\` with every bundled
+  component's licence and `THIRD-PARTY-NOTICES.txt`; the installer puts it next to the app with a
+  "Lookhere licences" Start menu shortcut. ffmpeg is GPL v3: the notice names the exact build, links
+  its source and includes the written offer to provide source on request (for three years).
 
 ## Porting to Mac (later)
 The pure-Python parts carry over: `process.py`, `updater.py` (needs a .dmg/.pkg asset), the

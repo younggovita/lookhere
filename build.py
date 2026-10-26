@@ -52,6 +52,7 @@ def main():
     ffmpeg = paths.ffmpeg_exe()
     if not ffmpeg:
         sys.exit("ffmpeg.exe not found")
+    run([PY, os.path.join(HERE, "make_licenses.py")])  # licenses/: third-party notices for the installer
     work = os.path.join(HERE, "build")
     sep = os.pathsep
     run([PY, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", "Lookhere",
@@ -73,6 +74,7 @@ def main():
         sys.exit("Inno Setup not found (winget install JRSoftware.InnoSetup)")
     os.makedirs(os.path.join(HERE, "dist"), exist_ok=True)
     run([iscc, "/Q", "/DAppVersion=" + version, "/DAppSrc=" + os.path.join(work, "app", "Lookhere"),
+         "/DLicSrc=" + os.path.join(HERE, "licenses"),
          "/O" + os.path.join(HERE, "dist"), os.path.join(HERE, "installer.iss")])
     setup = os.path.join(HERE, "dist", "Lookhere-Setup-%s.exe" % version)
     print("Built %s (%.0f MB)" % (setup, os.path.getsize(setup) / 1e6))

@@ -30,9 +30,12 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "{#AppSrc}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; third-party licences (ffmpeg is GPL v3): see licenses\THIRD-PARTY-NOTICES.txt
+Source: "{#LicSrc}\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Lookhere"; Filename: "{app}\Lookhere.exe"
+Name: "{group}\Lookhere licences"; Filename: "{app}\licenses\THIRD-PARTY-NOTICES.txt"
 Name: "{userdesktop}\Lookhere"; Filename: "{app}\Lookhere.exe"; Tasks: desktopicon
 
 [Registry]

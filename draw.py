@@ -20,6 +20,15 @@ from pynput import mouse
 import hud
 
 user32 = hud.user32
+gdi32 = hud.gdi32
+kernel32 = ctypes.WinDLL("kernel32")
+kernel32.GetModuleHandleW.restype = wt.HMODULE
+kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+hud._proto(gdi32.CreateBitmap, wt.HBITMAP, ctypes.c_int, ctypes.c_int, wt.UINT, wt.UINT, ctypes.c_void_p)
+hud._proto(user32.CreateIconIndirect, wt.HICON, ctypes.c_void_p)
+hud._proto(user32.RegisterClassW, wt.ATOM, ctypes.c_void_p)
+hud._proto(user32.GetSystemMetrics, ctypes.c_int, ctypes.c_int)
+hud._proto(user32.SetCursor, wt.HANDLE, wt.HANDLE)
 SHOW_FOR, FADE = 3.0, 0.6   # seconds a finished stroke stays, then fades
 WIDTH = 7                   # stroke width in px
 FPS = 60
@@ -56,8 +65,19 @@ def smooth(points, passes=2):
 
 
 def stroke_layer(pts, lime, style=None, presmoothed=False):
-    """A stroke (or piece of one) as an anti-aliased RGBA image; returns (image, x, y) of its top-left
-    corner in the same coordinates as pts."""
+    """A whole stroke as one anti-aliased RGBA image (for previews); returns (image, x, y)."""
+    edge, line_img, x, y = stroke_parts(pts, lime, style, presmoothed)
+    if edge is not None:
+        edge.alpha_composite(line_img)
+        return edge, x, y
+    return line_img, x, y
+
+
+def stroke_parts(pts, lime, style=None, presmoothed=False):
+    """A stroke (or piece of one) as two anti-aliased layers, the edge (shadow or outline, or None)
+    and the lime line, plus their top-left corner. They're kept apart so every edge can be painted
+    before any lime: otherwise one piece's shadow lands on the lime of the piece before it, leaving
+    dark marks at the joins and wherever the line crosses itself."""
     style = style or STYLE
     if not presmoothed:
         pts = smooth(pts)
@@ -77,14 +97,86 @@ def stroke_layer(pts, lime, style=None, presmoothed=False):
         for x, y in (p[0], p[-1]):  # round caps
             d.ellipse((x - r, y - r, x + r, y + r), fill=colour)
 
+    edge = None
     if style == "shadow":
         sh = Image.new("RGBA", big.size, (0, 0, 0, 0))
         line(sh, (0, 0, 0, 120), WIDTH + 2, dy=2)
-        big.alpha_composite(sh.filter(ImageFilter.GaussianBlur(5 * SS)))
+        edge = sh.filter(ImageFilter.GaussianBlur(5 * SS)).resize((w, h), Image.LANCZOS)
     elif style == "outline":
         line(big, (12, 12, 12, 255), WIDTH + 3)
+        edge = big.resize((w, h), Image.LANCZOS)
+        big = Image.new("RGBA", big.size, (0, 0, 0, 0))
     line(big, lime + (255,), WIDTH)
-    return big.resize((w, h), Image.LANCZOS), int(x0), int(y0)
+    return edge, big.resize((w, h), Image.LANCZOS), int(x0), int(y0)
+# ---------- pencil cursor ----------
+class _ICONINFO(ctypes.Structure):
+    _fields_ = [("fIcon", wt.BOOL), ("xHotspot", wt.DWORD), ("yHotspot", wt.DWORD),
+                ("hbmMask", wt.HBITMAP), ("hbmColor", wt.HBITMAP)]
+
+
+class _WNDCLASSW(ctypes.Structure):
+    _fields_ = [("style", wt.UINT), ("lpfnWndProc", ctypes.c_void_p), ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int), ("hInstance", wt.HINSTANCE), ("hIcon", wt.HICON),
+                ("hCursor", wt.HANDLE), ("hbrBackground", wt.HBRUSH), ("lpszMenuName", wt.LPCWSTR),
+                ("lpszClassName", wt.LPCWSTR)]
+
+
+def pencil_image(size):
+    """The cursor art: a lime pencil at 45 degrees with a dark edge, graphite tip at bottom-left."""
+    S = 8
+    big = Image.new("RGBA", (size * S, size * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(big)
+    u = size * S / 32.0
+    tip = (2.0 * u, 30.0 * u)
+    ax, ay, nx, ny = 0.7071, -0.7071, 0.7071, 0.7071
+    L, hw = 30.0, 4.4
+
+    def at(t, k=0.0):
+        return (tip[0] + (ax * t + nx * k) * u, tip[1] + (ay * t + ny * k) * u)
+
+    dark, lime, wood, metal = (12, 12, 12, 255), (212, 255, 58, 255), (236, 205, 160, 255), (175, 175, 180, 255)
+    outline = max(1, round(1.6 * u))
+    body = [at(7, -hw), at(L - 6, -hw), at(L - 6, hw), at(7, hw)]
+    eraser = [at(L - 4.6, -hw), at(L - 1.2, -hw), at(L, -hw + 1.2), at(L, hw - 1.2), at(L - 1.2, hw), at(L - 4.6, hw)]
+    for poly, fill in ((eraser, (255, 140, 160, 255)), ([at(L - 6, -hw), at(L - 4.6, -hw), at(L - 4.6, hw),
+                                                         at(L - 6, hw)], metal),
+                       (body, lime), ([at(0), at(7, -hw), at(7, hw)], wood)):
+        d.polygon(poly, fill=fill, outline=dark, width=outline)
+    d.polygon([at(0), at(2.8, -hw * 2.8 / 7), at(2.8, hw * 2.8 / 7)], fill=dark)  # graphite
+    return big.resize((size, size), Image.LANCZOS)
+
+
+def make_pencil_cursor():
+    size = max(32, user32.GetSystemMetrics(13))  # SM_CXCURSOR
+    img = np.asarray(pencil_image(size))
+    bgra = np.ascontiguousarray(img[:, :, [2, 1, 0, 3]])
+    hdr = hud.BITMAPINFOHEADER(ctypes.sizeof(hud.BITMAPINFOHEADER), size, -size, 1, 32, 0, 0, 0, 0, 0, 0)
+    bits = ctypes.c_void_p()
+    color = gdi32.CreateDIBSection(None, ctypes.byref(hdr), 0, ctypes.byref(bits), None, 0)
+    ctypes.memmove(bits, bgra.ctypes.data, size * size * 4)
+    mask = gdi32.CreateBitmap(size, size, 1, 1, None)
+    info = _ICONINFO(False, round(2 / 32 * size), round(30 / 32 * size), mask, color)  # hotspot = tip
+    return user32.CreateIconIndirect(ctypes.byref(info))
+
+
+_CLASS = None
+_CURSOR = None
+
+
+def ink_class():
+    """A window class whose cursor is the pencil (the drawing windows use it)."""
+    global _CLASS
+    if _CLASS is None:
+        wc = _WNDCLASSW()
+        wc.lpfnWndProc = ctypes.cast(ctypes.windll.user32.DefWindowProcW, ctypes.c_void_p).value
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        global _CURSOR
+        wc.hCursor = _CURSOR = make_pencil_cursor()
+        wc.lpszClassName = "LookhereInk"
+        _CLASS = "LookhereInk" if user32.RegisterClassW(ctypes.byref(wc)) else "STATIC"
+    return _CLASS
+
+
 EX_BASE = 0x00080000 | 0x08000000 | 0x80 | 0x8  # LAYERED | NOACTIVATE | TOOLWINDOW | TOPMOST
 EX_CLICK_THROUGH = 0x00000020                    # TRANSPARENT
 user32.SetWindowLongW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_long]
@@ -101,7 +193,7 @@ def monitors():
 class _Screen:
     def __init__(self, mon):
         self.mon = mon
-        self.hwnd = user32.CreateWindowExW(EX_BASE | EX_CLICK_THROUGH, "STATIC", "Lookhere drawing", 0x80000000,
+        self.hwnd = user32.CreateWindowExW(EX_BASE | EX_CLICK_THROUGH, ink_class(), "Lookhere drawing", 0x80000000,
                                            mon["left"], mon["top"], 1, 1, None, None, None, None)
         self.surface = hud._Surface()
         self.shown = False
@@ -213,13 +305,13 @@ class DrawLayer:
         frozen = st.get("frozen", 0)
         while len(sm) - frozen > self.CHUNK + self.SETTLE:
             a, b = max(0, frozen - 1), frozen + self.CHUNK + 1
-            pieces.append(stroke_layer(sm[a:b], lime, presmoothed=True))
+            pieces.append(stroke_parts(sm[a:b], lime, presmoothed=True))
             frozen += self.CHUNK
         st["frozen"] = frozen
         tail_pts = sm[max(0, frozen - 1):]
         if st.get("tail_len") != len(sm) or st["done"] is not None:
             old = st.get("tail")
-            st["tail"] = stroke_layer(tail_pts, lime, presmoothed=True)
+            st["tail"] = stroke_parts(tail_pts, lime, presmoothed=True)
             st["tail_len"] = len(sm)
             if old:
                 changed.append(_box(old))
@@ -256,6 +348,8 @@ class DrawLayer:
                 continue
             if mode_changed:
                 user32.SetWindowLongW(scr.hwnd, -20, EX_BASE | (0 if active else EX_CLICK_THROUGH))
+                if active and _CURSOR:
+                    user32.SetCursor(_CURSOR)  # show the pencil now, not on the next mouse move
             boxes = [b for b in dirty if _overlaps(b, scr.mon)]
             if boxes or mode_changed or not scr.shown:
                 self._paint(scr, mine, active, now, boxes, full=mode_changed or not scr.shown)
@@ -296,21 +390,25 @@ class DrawLayer:
         if rx1 <= rx0 or ry1 <= ry0:
             return
         img = Image.new("RGBA", (rx1 - rx0, ry1 - ry0), (0, 0, 0, base))
-        for st in strokes:
-            a = self._alpha(st["done"], now)
-            if a <= 0:
-                continue
-            for layer, lx, ly in self._parts(st):
-                lx, ly = lx - m["left"] - rx0, ly - m["top"] - ry0  # into region coordinates
-                cx0, cy0 = max(0, lx), max(0, ly)
-                cx1, cy1 = min(img.width, lx + layer.width), min(img.height, ly + layer.height)
-                if cx1 <= cx0 or cy1 <= cy0:
+        for which in (0, 1):  # every edge (shadow/outline) first, then all the lime on top
+            for st in strokes:
+                a = self._alpha(st["done"], now)
+                if a <= 0:
                     continue
-                piece = layer.crop((cx0 - lx, cy0 - ly, cx1 - lx, cy1 - ly))
-                if a < 1:
-                    al = np.asarray(piece.getchannel("A"), dtype=np.float32) * a
-                    piece.putalpha(Image.fromarray(al.astype(np.uint8)))
-                img.alpha_composite(piece, (cx0, cy0))
+                for part in self._parts(st):
+                    layer, lx, ly = part[which], part[2], part[3]
+                    if layer is None:
+                        continue
+                    lx, ly = lx - m["left"] - rx0, ly - m["top"] - ry0  # into region coordinates
+                    cx0, cy0 = max(0, lx), max(0, ly)
+                    cx1, cy1 = min(img.width, lx + layer.width), min(img.height, ly + layer.height)
+                    if cx1 <= cx0 or cy1 <= cy0:
+                        continue
+                    piece = layer.crop((cx0 - lx, cy0 - ly, cx1 - lx, cy1 - ly))
+                    if a < 1:
+                        al = np.asarray(piece.getchannel("A"), dtype=np.float32) * a
+                        piece.putalpha(Image.fromarray(al.astype(np.uint8)))
+                    img.alpha_composite(piece, (cx0, cy0))
         arr = np.asarray(img)
         alpha = arr[:, :, 3:4].astype(np.uint16)
         out = buf[ry0:ry1, rx0:rx1]
@@ -323,7 +421,7 @@ class DrawLayer:
 
 
 def _box(piece):
-    layer, x, y = piece
+    _, layer, x, y = piece
     return (x, y, x + layer.width, y + layer.height)
 
 

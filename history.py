@@ -13,7 +13,6 @@ import subprocess
 import threading
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox
 
 from PIL import Image, ImageDraw, ImageTk
 
@@ -25,16 +24,6 @@ _win = None
 
 def hexc(rgb):
     return "#%02x%02x%02x" % tuple(rgb[:3])
-
-
-def theme():
-    dark = hud.BG[0] < 128
-    return dict(
-        bg=hexc(hud.BG), card=hexc((24, 24, 24) if dark else (255, 255, 255)),
-        line=hexc((44, 44, 44) if dark else (228, 228, 224)), text=hexc(hud.TEXT),
-        muted=hexc((150, 150, 150) if dark else (110, 110, 110)), accent=hexc(hud.ACCENT),
-        accent_text="#0c0c0c", danger=hexc(hud.RED), dark=dark,
-        button=hexc((36, 36, 36) if dark else (240, 240, 236)))
 
 
 def duration_of(path):
@@ -93,16 +82,17 @@ def list_recordings(root):
     return out
 
 
-def thumbnail(d, size=(176, 99)):
+def thumbnail(d, size=(176, 99), card=(24, 24, 28)):
     frames = os.path.join(d, "frames")
     first = sorted(os.listdir(frames))[0] if os.path.isdir(frames) and os.listdir(frames) else None
     img = Image.open(os.path.join(frames, first)).convert("RGB") if first else Image.new("RGB", size, (60, 60, 60))
-    img = img.resize(size, Image.LANCZOS)
-    mask = Image.new("L", size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=8, fill=255)
-    bg = Image.new("RGB", size, (0, 0, 0))
-    bg.paste(img, (0, 0), mask)
-    return bg
+    S = 3
+    big = img.resize((size[0] * S, size[1] * S), Image.LANCZOS)
+    mask = Image.new("L", big.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, big.width - 1, big.height - 1), radius=12 * S, fill=255)
+    bg = Image.new("RGB", big.size, card[:3])
+    bg.paste(big, (0, 0), mask)
+    return bg.resize(size, Image.LANCZOS)  # smooth rounded corners against the card colour
 
 
 def when_label(dt):
@@ -123,60 +113,143 @@ def open_window(app):
     _win = HistoryWindow(app)
 
 
-class Button(tk.Label):
-    """A flat, rounded-feeling button that follows the theme."""
+# ---------- look: the same black/white + acid lime as the pill ----------
+def palette():
+    dark = hud.BG[0] < 128
+    return dict(
+        dark=dark,
+        bg=(10, 10, 10) if dark else (246, 246, 243),
+        card=(22, 22, 26) if dark else (255, 255, 255),
+        edge=(255, 255, 255, 22) if dark else (0, 0, 0, 22),
+        text=tuple(hud.TEXT[:3]),
+        muted=(150, 150, 155) if dark else (105, 105, 110),
+        lime=tuple(hud.ACCENT[:3]),
+        ink=(12, 12, 12),
+        button=(36, 36, 42) if dark else (238, 238, 234),
+        button_hover=(52, 52, 60) if dark else (226, 226, 220),
+        red=tuple(hud.RED[:3]),
+    )
 
-    def __init__(self, parent, text, command, t, kind="normal"):
-        bg = {"normal": t["button"], "accent": t["accent"], "danger": t["button"]}[kind]
-        fg = {"normal": t["text"], "accent": t["accent_text"], "danger": t["danger"]}[kind]
-        super().__init__(parent, text=text, bg=bg, fg=fg, padx=12, pady=5, cursor="hand2",
-                         font=("Segoe UI Semibold", 9))
-        self.bind("<Button-1>", lambda e: command())
-        hover = t["line"] if kind != "accent" else t["accent"]
-        self.bind("<Enter>", lambda e: self.configure(bg=hover))
-        self.bind("<Leave>", lambda e: self.configure(bg=bg))
+
+def _font(size, bold=True):
+    return hud._font(["seguisb.ttf", "segoeui.ttf"] if bold else ["segoeui.ttf"], size)
+
+
+def pill_image(text, fill, fg, height=30, pad=15, icon=None, size=13, outline=None):
+    """A pill-shaped button drawn at 3x and scaled down, so the round ends are smooth."""
+    S = 3
+    f = _font(size * S)
+    tw = f.getlength(text)
+    iw = (11 * S + 7 * S) if icon else 0
+    w = int(tw + iw + pad * 2 * S)
+    h = height * S
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=fill + (255,),
+                        outline=outline + (255,) if outline else None, width=S if outline else 0)
+    x = pad * S
+    if icon == "play":
+        cy = h / 2
+        d.polygon([(x, cy - 6 * S), (x + 10 * S, cy), (x, cy + 6 * S)], fill=fg + (255,))
+        x += 11 * S + 7 * S
+    d.text((x, h / 2), text, font=f, fill=fg + (255,), anchor="lm")
+    return im.resize((w // S, height), Image.LANCZOS)
+
+
+def round_rect(w, h, fill, edge, radius=18):
+    S = 3
+    im = Image.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
+    ImageDraw.Draw(im).rounded_rectangle((0, 0, w * S - 1, h * S - 1), radius=radius * S, fill=fill + (255,),
+                                         outline=edge, width=S)
+    return im.resize((w, h), Image.LANCZOS)
+
+
+class Pill(tk.Label):
+    """A pill button; kind: "lime", "plain" or "danger". Hover lightens it."""
+
+    def __init__(self, parent, text, command, p, bg, kind="plain", icon=None):
+        self.p, self.kind, self.icon, self.command, self.text_ = p, kind, icon, command, text
+        super().__init__(parent, bd=0, highlightthickness=0, bg=hexc(bg), cursor="hand2")
+        self.set_text(text)
+        self.bind("<Button-1>", lambda e: self.command())
+        self.bind("<Enter>", lambda e: self.configure(image=self.hover))
+        self.bind("<Leave>", lambda e: self.configure(image=self.normal))
+
+    def set_text(self, text, kind=None):
+        p, kind = self.p, kind or self.kind
+        if kind == "lime":
+            normal, hover, fg = p["lime"], tuple(min(255, c + 25) for c in p["lime"]), p["ink"]
+        elif kind == "armed":  # a delete waiting for its second click
+            normal, hover, fg = p["red"], p["red"], (255, 255, 255)
+        else:
+            normal, hover = p["button"], p["button_hover"]
+            fg = p["red"] if kind == "danger" else p["text"]
+        self.normal = ImageTk.PhotoImage(pill_image(text, normal, fg, icon=self.icon))
+        self.hover = ImageTk.PhotoImage(pill_image(text, hover, fg, icon=self.icon))
+        self.configure(image=self.normal)
+
+
+def dark_title_bar(top, dark):
+    try:
+        hwnd = ctypes.windll.user32.GetParent(top.winfo_id()) or top.winfo_id()
+        val = ctypes.c_int(1 if dark else 0)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val))
+    except Exception:
+        pass
 
 
 class HistoryWindow:
+    CARD_H = 132
+
     def __init__(self, app):
         self.app = app
-        self.t = theme()
-        t = self.t
+        self.p = palette()
+        p = self.p
         self.top = tk.Toplevel(app.root)
-        self.top.title("Lookhere history")
-        self.top.geometry("760x640")
-        self.top.minsize(560, 360)
-        self.top.configure(bg=t["bg"])
+        self.top.title("Lookhere")
+        self.top.geometry("780x660")
+        self.top.minsize(600, 380)
+        self.top.configure(bg=hexc(p["bg"]))
         try:
             self.top.iconbitmap(os.path.join(paths.RES, "lookhere.ico"))
         except tk.TclError:
             pass
-        head = tk.Frame(self.top, bg=t["bg"])
-        head.pack(fill="x", padx=22, pady=(18, 8))
-        tk.Label(head, text="Recordings", bg=t["bg"], fg=t["text"], font=("Segoe UI Semibold", 17)).pack(side="left")
-        Button(head, "Open folder", lambda: os.startfile(app_root(app)), t).pack(side="right")
-        self.count = tk.Label(head, text="", bg=t["bg"], fg=t["muted"], font=("Segoe UI", 10))
-        self.count.pack(side="left", padx=12, pady=(6, 0))
+        self.top.update_idletasks()
+        dark_title_bar(self.top, p["dark"])
 
-        body = tk.Frame(self.top, bg=t["bg"])
-        body.pack(fill="both", expand=True, padx=(22, 8), pady=(0, 16))
-        self.canvas = tk.Canvas(body, bg=t["bg"], highlightthickness=0, bd=0)
-        sb = tk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.list = tk.Frame(self.canvas, bg=t["bg"])
+        head = tk.Frame(self.top, bg=hexc(p["bg"]))
+        head.pack(fill="x", padx=24, pady=(20, 12))
+        import logo
+        self._logo = ImageTk.PhotoImage(logo.draw_logo(logo.IDLE, 34))
+        tk.Label(head, image=self._logo, bg=hexc(p["bg"])).pack(side="left", padx=(0, 12))
+        tk.Label(head, text="Recordings", bg=hexc(p["bg"]), fg=hexc(p["text"]),
+                 font=("Segoe UI Semibold", 18)).pack(side="left")
+        self.count = tk.Label(head, text="", bg=hexc(p["bg"]), fg=hexc(p["muted"]), font=("Segoe UI", 10))
+        self.count.pack(side="left", padx=12, pady=(8, 0))
+        Pill(head, "Open folder", lambda: os.startfile(app_root(app)), p, p["bg"]).pack(side="right")
+
+        self.canvas = tk.Canvas(self.top, bg=hexc(p["bg"]), highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True, padx=(24, 14), pady=(0, 18))
+        self.list = tk.Frame(self.canvas, bg=hexc(p["bg"]))
         self.list_id = self.canvas.create_window((0, 0), window=self.list, anchor="nw")
         self.list.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.list_id, width=e.width - 12))
+        self.canvas.bind("<Configure>", self._resized)
         self.top.bind_all("<MouseWheel>", self._wheel)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.images = []
+        self.images, self.cards, self._width = [], [], 700
         self.refresh()
 
     def _wheel(self, e):
         if self.top.winfo_exists():
             self.canvas.yview_scroll(int(-e.delta / 120), "units")
+
+    def _resized(self, e):
+        self.canvas.itemconfigure(self.list_id, width=e.width - 10)
+        w = e.width - 10
+        if abs(w - self._width) > 2:
+            self._width = w
+            for c in self.cards:
+                c.event_generate("<<Redraw>>")
 
     def close(self):
         global _win
@@ -185,52 +258,81 @@ class HistoryWindow:
         _win = None
 
     def refresh(self):
-        t = self.t
+        p = self.p
         for w in self.list.winfo_children():
             w.destroy()
-        self.images = []
+        self.images, self.cards = [], []
         recs = list_recordings(app_root(self.app))
-        self.count.configure(text="%d saved" % len(recs))
+        self.count.configure(text="%d saved" % len(recs) if recs else "")
         if not recs:
-            tk.Label(self.list, text="Nothing yet. Press %s to record." % self.app.hotkey_label, bg=t["bg"],
-                     fg=t["muted"], font=("Segoe UI", 11)).pack(pady=40)
+            self._empty()
         for r in recs:
-            self._row(r)
+            self._card(r)
 
-    def _row(self, r):
-        t = self.t
-        card = tk.Frame(self.list, bg=t["card"], highlightbackground=t["line"], highlightthickness=1)
-        card.pack(fill="x", pady=6)
-        img = ImageTk.PhotoImage(thumbnail(r["dir"]))
+    def _empty(self):
+        p = self.p
+        box = tk.Frame(self.list, bg=hexc(p["bg"]))
+        box.pack(fill="x", pady=90)
+        import logo
+        img = ImageTk.PhotoImage(logo.draw_logo(logo.IDLE, 72))
         self.images.append(img)
-        pic = tk.Label(card, image=img, bg=t["card"], cursor="hand2")
-        pic.pack(side="left", padx=12, pady=12)
-        pic.bind("<Button-1>", lambda e: os.startfile(os.path.join(r["dir"], "preview.mp4")))
-        info = tk.Frame(card, bg=t["card"])
-        info.pack(side="left", fill="both", expand=True, pady=12)
-        top = tk.Frame(info, bg=t["card"])
-        top.pack(fill="x")
-        tk.Label(top, text=when_label(r["when"]), bg=t["card"], fg=t["text"],
-                 font=("Segoe UI Semibold", 11)).pack(side="left")
-        length = r["length"] if r["length"] is not None else duration_of(os.path.join(r["dir"], "preview.mp4"))
-        trimmed = os.path.exists(os.path.join(r["dir"], "edits.json"))
-        tk.Label(top, text=fmt(length) + ("  trimmed" if trimmed else ""), bg=t["card"], fg=t["muted"],
-                 font=("Segoe UI", 10)).pack(side="left", padx=10)
-        tk.Label(info, text=r["said"] or "(nothing said)", bg=t["card"], fg=t["muted"], font=("Segoe UI", 9),
-                 wraplength=420, justify="left", anchor="w").pack(fill="x", pady=(4, 8))
-        btns = tk.Frame(info, bg=t["card"])
-        btns.pack(fill="x")
-        Button(btns, "Play", lambda: os.startfile(os.path.join(r["dir"], "preview.mp4")), t, "accent").pack(side="left")
-        Button(btns, "Copy", lambda: self.app.copy_recording(r["dir"]), t).pack(side="left", padx=6)
-        Button(btns, "Trim", lambda: TrimWindow(self, r["dir"]), t).pack(side="left")
-        Button(btns, "Folder", lambda: os.startfile(r["dir"]), t).pack(side="left", padx=6)
-        Button(btns, "Delete", lambda: self._delete(r), t, "danger").pack(side="left")
+        tk.Label(box, image=img, bg=hexc(p["bg"])).pack()
+        tk.Label(box, text="No recordings yet", bg=hexc(p["bg"]), fg=hexc(p["text"]),
+                 font=("Segoe UI Semibold", 14)).pack(pady=(16, 4))
+        tk.Label(box, text="Press %s to record. They'll show up here." % self.app.hotkey_label,
+                 bg=hexc(p["bg"]), fg=hexc(p["muted"]), font=("Segoe UI", 10)).pack()
 
-    def _delete(self, r):
-        if messagebox.askyesno("Delete recording", "Move the recording from %s to the Recycle Bin?"
-                               % when_label(r["when"]), parent=self.top):
+    def _card(self, r):
+        p = self.p
+        H = self.CARD_H
+        card = tk.Canvas(self.list, height=H, bg=hexc(p["bg"]), highlightthickness=0, bd=0)
+        card.pack(fill="x", pady=6)
+        self.cards.append(card)
+        thumb = ImageTk.PhotoImage(thumbnail(r["dir"], (176, 99), p["card"]))
+        self.images.append(thumb)
+        video = os.path.join(r["dir"], "preview.mp4")
+        length = r["length"] if r["length"] is not None else duration_of(video)
+        trimmed = os.path.exists(os.path.join(r["dir"], "edits.json"))
+
+        btns = tk.Frame(card, bg=hexc(p["card"]))
+        Pill(btns, "Play", lambda: os.startfile(video), p, p["card"], "lime", icon="play").pack(side="left")
+        Pill(btns, "Copy", lambda: self.app.copy_recording(r["dir"]), p, p["card"]).pack(side="left", padx=6)
+        Pill(btns, "Trim", lambda: TrimWindow(self, r["dir"]), p, p["card"]).pack(side="left")
+        Pill(btns, "Folder", lambda: os.startfile(r["dir"]), p, p["card"]).pack(side="left", padx=6)
+        delete = Pill(btns, "Delete", None, p, p["card"], "danger")
+        delete.command = lambda: self._delete(r, delete)
+        delete.pack(side="left")
+
+        def draw(_e=None):
+            W = max(400, self._width)
+            card.delete("all")
+            bg = ImageTk.PhotoImage(round_rect(W, H, p["card"], p["edge"]))
+            card._bg = bg
+            card.create_image(0, 0, image=bg, anchor="nw")
+            card.create_image(16, (H - 99) // 2, image=thumb, anchor="nw")
+            card.tag_bind(card.create_rectangle(16, (H - 99) // 2, 192, (H - 99) // 2 + 99, outline="", width=0),
+                          "<Button-1>", lambda e: os.startfile(video))
+            x = 210
+            card.create_text(x, 22, text=when_label(r["when"]), anchor="nw", fill=hexc(p["text"]),
+                             font=("Segoe UI Semibold", 12))
+            meta = fmt(length) + ("  ·  trimmed" if trimmed else "")
+            card.create_text(W - 20, 24, text=meta, anchor="ne", fill=hexc(p["muted"]), font=("Segoe UI", 10))
+            card.create_text(x, 48, text=r["said"] or "Nothing said", anchor="nw", width=W - x - 24,
+                             fill=hexc(p["muted"]), font=("Segoe UI", 10))
+            card.create_window(x, H - 18, window=btns, anchor="sw")
+        card.bind("<<Redraw>>", draw)
+        draw()
+
+    def _delete(self, r, button):
+        """First click arms the button (it turns red: "Delete?"); a second click within 3 s deletes."""
+        if getattr(button, "armed", False):
             recycle(r["dir"])
             self.refresh()
+            return
+        button.armed = True
+        button.set_text("Delete?", "armed")
+        self.top.after(3000, lambda: button.winfo_exists() and (setattr(button, "armed", False),
+                                                                button.set_text("Delete", "danger")))
 
 
 def app_root(app):
@@ -243,7 +345,8 @@ class TrimWindow:
 
     def __init__(self, history, rec_dir):
         self.h, self.dir = history, rec_dir
-        t = self.t = history.t
+        p = self.p = history.p
+        bgc = hexc(p["bg"])
         self.video = os.path.join(rec_dir, "preview.mp4")
         self.length = duration_of(self.video)
         try:
@@ -253,16 +356,18 @@ class TrimWindow:
             self.edits = {}
         self.top = tk.Toplevel(history.top)
         self.top.title("Trim recording")
-        self.top.configure(bg=t["bg"])
+        self.top.configure(bg=bgc)
         self.top.resizable(False, False)
         self.top.transient(history.top)
-        self.preview = tk.Label(self.top, bg="#000000")
+        self.top.update_idletasks()
+        dark_title_bar(self.top, p["dark"])
+        self.preview = tk.Label(self.top, bg=bgc, bd=0)
         self.preview.pack(padx=20, pady=(20, 10))
         self.start = tk.DoubleVar(value=0.0)
         self.end = tk.DoubleVar(value=round(self.length, 1))
         # one bar: the filmstrip with lime handles at start and end, cut-off parts dimmed
         self.W, self.H, self.PAD = 640, 52, 10
-        self.bar = tk.Canvas(self.top, width=self.W + self.PAD * 2, height=self.H + 8, bg=t["bg"],
+        self.bar = tk.Canvas(self.top, width=self.W + self.PAD * 2, height=self.H + 8, bg=bgc,
                              highlightthickness=0, bd=0, cursor="sb_h_double_arrow")
         self.bar.pack(padx=10)
         self._strip_img = None
@@ -270,15 +375,15 @@ class TrimWindow:
         self.bar.bind("<B1-Motion>", self._drag)
         self._dragging = "Start"
         self._draw_bar()
-        self.span = tk.Label(self.top, text="", bg=t["bg"], fg=t["muted"], font=("Segoe UI", 10))
-        self.span.pack(pady=(6, 0))
-        btns = tk.Frame(self.top, bg=t["bg"])
+        self.span = tk.Label(self.top, text="", bg=bgc, fg=hexc(p["muted"]), font=("Segoe UI", 10))
+        self.span.pack(pady=(8, 0))
+        btns = tk.Frame(self.top, bg=bgc)
         btns.pack(pady=16)
-        Button(btns, "Save and copy", self._save, t, "accent").pack(side="left")
+        Pill(btns, "Save and copy", self._save, p, p["bg"], "lime").pack(side="left")
         if self.edits.get("trim"):
-            Button(btns, "Undo trim", self._reset, t).pack(side="left", padx=8)
-        Button(btns, "Cancel", self.top.destroy, t).pack(side="left", padx=8)
-        self.status = tk.Label(self.top, text="", bg=t["bg"], fg=t["muted"], font=("Segoe UI", 9))
+            Pill(btns, "Undo trim", self._reset, p, p["bg"]).pack(side="left", padx=8)
+        Pill(btns, "Cancel", self.top.destroy, p, p["bg"]).pack(side="left", padx=8)
+        self.status = tk.Label(self.top, text="", bg=bgc, fg=hexc(p["muted"]), font=("Segoe UI", 9))
         self.status.pack(pady=(0, 12))
         self._pending = None
         self._show(0.0)
@@ -305,20 +410,21 @@ class TrimWindow:
         return min(self.length, max(0.0, (x - self.PAD) / self.W * self.length))
 
     def _draw_bar(self):
-        c, t = self.bar, self.t
+        c, p = self.bar, self.p
+        lime = hexc(p["lime"])
         c.delete("all")
         top, bot = 4, 4 + self.H
         if self._strip_img:
             c.create_image(self.PAD, top, image=self._strip_img, anchor="nw")
         else:
-            c.create_rectangle(self.PAD, top, self.PAD + self.W, bot, fill=t["line"], width=0)
+            c.create_rectangle(self.PAD, top, self.PAD + self.W, bot, fill=hexc(p["button"]), width=0)
         xs, xe = self._x(self.start.get()), self._x(self.end.get())
         for x0, x1 in ((self.PAD, xs), (xe, self.PAD + self.W)):  # dim what gets cut
             if x1 > x0:
                 c.create_rectangle(x0, top, x1, bot, fill="#000000", stipple="gray75", width=0)
-        c.create_rectangle(xs, top, xe, bot, outline=t["accent"], width=3)
+        c.create_rectangle(xs, top, xe, bot, outline=lime, width=3)
         for x in (xs, xe):
-            c.create_rectangle(x - 5, top - 3, x + 5, bot + 3, fill=t["accent"], outline="#0c0c0c", width=1)
+            c.create_rectangle(x - 5, top - 3, x + 5, bot + 3, fill=lime, outline="#0c0c0c", width=1)
             c.create_line(x, top + 16, x, bot - 16, fill="#0c0c0c", width=2)
 
     def _grab(self, e):
@@ -354,7 +460,13 @@ class TrimWindow:
 
     def _set_preview(self, im):
         if self.top.winfo_exists():
-            self._img = ImageTk.PhotoImage(im)
+            S = 2  # rounded corners like the cards
+            big = im.resize((im.width * S, im.height * S))
+            mask = Image.new("L", big.size, 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, big.width - 1, big.height - 1), radius=14 * S, fill=255)
+            out = Image.new("RGB", big.size, self.p["bg"])
+            out.paste(big, (0, 0), mask)
+            self._img = ImageTk.PhotoImage(out.resize(im.size, Image.LANCZOS))
             self.preview.configure(image=self._img)
 
     def _write_edits(self, trim):

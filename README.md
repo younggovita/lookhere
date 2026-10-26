@@ -17,8 +17,7 @@ frames and transcript saved next to the video. A soft ding plays when recording 
 | red stop button on the pill | same as Ctrl+Alt+H: finish the recording |
 | **Esc** | cancel and delete |
 
-All three shortcuts can be changed from tray > **Shortcuts** (press the new keys; ones another app
-owns are refused).
+Shortcuts can be changed in `config.json` (`hotkey`, `pause_hotkey`, `draw_hotkey`).
 
 A floating pill at the top of the screen you're on shows what's happening: Arming (the screen
 video warms up for ~2s; your voice and clicks are already recording), Recording (timer and live
@@ -31,7 +30,6 @@ light/dark mode (default), Always dark, Always light. `theme-preview.png` shows 
 - **History...**: every recording with a thumbnail, length and first words. Play, Copy, Trim,
   Folder, Delete (to the Recycle Bin). **Trim** shows the recording as a filmstrip with lime start
   and end handles; saving rebuilds the recording (video, transcript, frames) and copies it.
-- **Drawing style**: soft shadow (default), thin dark edge or plain lime (strokes are smoothed and anti-aliased)
 - **Copy last recording again**
 - **Microphone**: Windows default or a specific mic; **Test microphone** shows a live meter.
 - **Start with Windows** (a per-user Run entry; the installer's checkbox sets the same thing)

@@ -824,22 +824,12 @@ class App:
             pystray.MenuItem("History...", lambda *_: self.events.put("history")),
             pystray.MenuItem("Copy last recording again", lambda *_: self.events.put("recopy")),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Shortcuts", pystray.Menu(*[
-                pystray.MenuItem((lambda k, t: lambda _: "%s: %s..." % (t, self.label(k)))(key, title),
-                                 (lambda k: lambda *_: self.events.put(("change_hotkey", k)))(key))
-                for key, title in (("hotkey", "Record / stop"), ("pause_hotkey", "Pause / resume"),
-                                   ("draw_hotkey", "Draw on screen"))])),
             pystray.MenuItem("Microphone", pystray.Menu(lambda: [
                 pystray.MenuItem(label, (lambda v: lambda *_: self.events.put(("mic", v)))(value),
                                  checked=(lambda v: lambda _: CONFIG["mic"] == v)(value), radio=True)
                 for label, value in [("Windows default", "")] + [(n, n) for n in input_devices()]
             ] + [pystray.Menu.SEPARATOR,
                  pystray.MenuItem("Test microphone", lambda *_: self.events.put(("mic", None)))])),
-            pystray.MenuItem("Drawing style", pystray.Menu(*[
-                pystray.MenuItem(label, (lambda v: lambda *_: self.events.put(("draw_style", v)))(value),
-                                 checked=(lambda v: lambda _: CONFIG["draw_style"] == v)(value), radio=True)
-                for label, value in (("Thin dark edge", "outline"), ("Soft shadow", "shadow"),
-                                     ("Plain lime", "plain"))])),
             pystray.MenuItem("Start with Windows", lambda *_: self.events.put("toggle_autostart"),
                              checked=lambda _: autostart_enabled()),
             pystray.MenuItem("Theme", pystray.Menu(*[
@@ -864,7 +854,7 @@ class App:
         taken = [self.label(k) for k, v in self.keys.items() if not v.ok]
         if taken:
             self.hud.show("error", "%s taken by another app" % " and ".join(taken),
-                          "Right-click the tray icon, then Shortcuts", hold=8)
+                          "Change it in config.json (see README)", hold=8)
 
     KEY_EVENTS = {"hotkey": "toggle", "pause_hotkey": "pause", "draw_hotkey": "draw"}
     KEY_TITLES = {"hotkey": "record", "pause_hotkey": "pause", "draw_hotkey": "draw"}

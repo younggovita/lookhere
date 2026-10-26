@@ -8,6 +8,7 @@ Unlike the status pill, these windows are NOT hidden from capture: the marks are
 seen in the video and the frames.
 """
 import ctypes
+import math
 import ctypes.wintypes as wt
 import threading
 import time
@@ -65,49 +66,23 @@ def smooth(points, passes=2):
 
 
 def stroke_layer(pts, lime, style=None, presmoothed=False):
-    """A whole stroke as one anti-aliased RGBA image (for previews); returns (image, x, y)."""
-    edge, line_img, x, y = stroke_parts(pts, lime, style, presmoothed)
-    if edge is not None:
-        edge.alpha_composite(line_img)
-        return edge, x, y
-    return line_img, x, y
+    """A whole stroke as one RGBA image (for previews and tests); returns (image, x, y)."""
+    global STYLE
+    old, STYLE = STYLE, style or STYLE
+    try:
+        sm = pts if presmoothed else smooth(pts)
+        ink = Ink()
+        ink.commit(sm, len(sm))
+        box = ink.box()
+        edge, line = ink.render(box, [], lime)
+        if edge is not None:
+            edge.alpha_composite(line)
+            line = edge
+        return line, box[0], box[1]
+    finally:
+        STYLE = old
 
 
-def stroke_parts(pts, lime, style=None, presmoothed=False):
-    """A stroke (or piece of one) as two anti-aliased layers, the edge (shadow or outline, or None)
-    and the lime line, plus their top-left corner. They're kept apart so every edge can be painted
-    before any lime: otherwise one piece's shadow lands on the lime of the piece before it, leaving
-    dark marks at the joins and wherever the line crosses itself."""
-    style = style or STYLE
-    if not presmoothed:
-        pts = smooth(pts)
-    pad = WIDTH + 14
-    x0, y0 = min(x for x, _ in pts) - pad, min(y for _, y in pts) - pad
-    w = int(max(x for x, _ in pts) + pad - x0) + 1
-    h = int(max(y for _, y in pts) + pad - y0) + 1
-    big = Image.new("RGBA", (w * SS, h * SS), (0, 0, 0, 0))
-    local = [((x - x0) * SS, (y - y0) * SS) for x, y in pts]
-
-    def line(img, colour, width, dy=0):
-        d = ImageDraw.Draw(img)
-        p = [(x, y + dy * SS) for x, y in local]
-        if len(p) > 1:
-            d.line(p, fill=colour, width=int(width * SS), joint="curve")
-        r = width * SS / 2
-        for x, y in (p[0], p[-1]):  # round caps
-            d.ellipse((x - r, y - r, x + r, y + r), fill=colour)
-
-    edge = None
-    if style == "shadow":
-        sh = Image.new("RGBA", big.size, (0, 0, 0, 0))
-        line(sh, (0, 0, 0, 120), WIDTH + 2, dy=2)
-        edge = sh.filter(ImageFilter.GaussianBlur(5 * SS)).resize((w, h), Image.LANCZOS)
-    elif style == "outline":
-        line(big, (12, 12, 12, 255), WIDTH + 3)
-        edge = big.resize((w, h), Image.LANCZOS)
-        big = Image.new("RGBA", big.size, (0, 0, 0, 0))
-    line(big, lime + (255,), WIDTH)
-    return edge, big.resize((w, h), Image.LANCZOS), int(x0), int(y0)
 # ---------- pencil cursor ----------
 class _ICONINFO(ctypes.Structure):
     _fields_ = [("fIcon", wt.BOOL), ("xHotspot", wt.DWORD), ("yHotspot", wt.DWORD),
@@ -290,39 +265,32 @@ class DrawLayer:
         for s in self.screens:
             user32.ShowWindow(s.hwnd, 0)
 
-    # A stroke is drawn in pieces: once part of the line can't change any more it is rendered
-    # once and kept; each frame only the live tip is rendered. Cost stays flat however long
-    # the stroke gets.
-    CHUNK, SETTLE = 48, 24  # smoothed points per frozen piece; points near the tip still moving
+    # Each stroke is one continuous brush trail (see Ink): settled parts of the line are stamped
+    # into the stroke's own high-res mask once; each frame only the area around the live tip is
+    # turned into pixels. No pieces, so no seams, and the cost stays flat however long it gets.
+    SETTLE = 24  # smoothed points near the tip that can still move
 
-    def _update(self, st, pts, lime):
-        """Bring a stroke's rendered pieces up to date. Returns the screen boxes that changed."""
-        changed = []
+    def _update(self, st, pts):
+        """Commit the settled part of a stroke to its ink. Returns the screen boxes that changed."""
+        ink = st.setdefault("ink", Ink())
         if st.get("final"):
-            return changed
+            return []
         sm = smooth(pts) if len(pts) > 1 else [pts[0], pts[0]]
-        pieces = st.setdefault("pieces", [])
-        frozen = st.get("frozen", 0)
-        while len(sm) - frozen > self.CHUNK + self.SETTLE:
-            a, b = max(0, frozen - 1), frozen + self.CHUNK + 1
-            pieces.append(stroke_parts(sm[a:b], lime, presmoothed=True))
-            frozen += self.CHUNK
-        st["frozen"] = frozen
-        tail_pts = sm[max(0, frozen - 1):]
+        upto = len(sm) if st["done"] is not None else max(1, len(sm) - self.SETTLE)
+        dirty = ink.commit(sm, upto)
+        old_tail = st.get("tail_box")
+        st["tail"] = [] if st["done"] is not None else sm[max(0, ink.committed - 1):]
+        st["tail_box"] = Ink.bbox(st["tail"]) if len(st["tail"]) > 0 else None
         if st.get("tail_len") != len(sm) or st["done"] is not None:
-            old = st.get("tail")
-            st["tail"] = stroke_parts(tail_pts, lime, presmoothed=True)
-            st["tail_len"] = len(sm)
-            if old:
-                changed.append(_box(old))
-            changed.append(_box(st["tail"]))
+            dirty += [b for b in (old_tail, st["tail_box"]) if b]
+        st["tail_len"] = len(sm)
         if st["done"] is not None:
             st["final"] = True
-        return changed
+            ink.finish()
+        return dirty
 
     def _frame(self):
         now = time.monotonic()
-        lime = hud.ACCENT[:3]
         with self.lock:
             gone = [s for s in self.strokes if s["done"] is not None and now - s["done"] >= SHOW_FOR + FADE]
             self.strokes = [s for s in self.strokes if s not in gone]
@@ -332,15 +300,16 @@ class DrawLayer:
             mode_changed, self.mode_changed = self.mode_changed, False
         dirty = []
         for st in strokes:
-            dirty += self._update(st, pts_now[id(st)], lime)
+            dirty += self._update(st, pts_now[id(st)])
             a = self._alpha(st["done"], now)
             if a < 1 or st.get("last_alpha", 1.0) != a:  # fading: its whole box changes
-                dirty += [_box(p) for p in self._parts(st)]
+                dirty.append(st["ink"].box())
             st["last_alpha"] = a
         for st in gone:
-            dirty += [_box(p) for p in self._parts(st)]
+            if "ink" in st:
+                dirty.append(st["ink"].box())
         for scr in self.screens:
-            mine = [st for st in strokes if any(_overlaps(_box(p), scr.mon) for p in self._parts(st))]
+            mine = [st for st in strokes if _overlaps(self._box(st), scr.mon)]
             if not active and not mine and not any(_overlaps(b, scr.mon) for b in dirty):
                 if scr.shown:
                     user32.ShowWindow(scr.hwnd, 0)
@@ -350,7 +319,7 @@ class DrawLayer:
                 user32.SetWindowLongW(scr.hwnd, -20, EX_BASE | (0 if active else EX_CLICK_THROUGH))
                 if active and _CURSOR:
                     user32.SetCursor(_CURSOR)  # show the pencil now, not on the next mouse move
-            boxes = [b for b in dirty if _overlaps(b, scr.mon)]
+            boxes = [b for b in dirty if b and _overlaps(b, scr.mon)]
             if boxes or mode_changed or not scr.shown:
                 self._paint(scr, mine, active, now, boxes, full=mode_changed or not scr.shown)
             if not scr.shown:
@@ -359,8 +328,12 @@ class DrawLayer:
         return bool(strokes) or active
 
     @staticmethod
-    def _parts(st):
-        return st.get("pieces", []) + ([st["tail"]] if st.get("tail") else [])
+    def _box(st):
+        b = st["ink"].box() if "ink" in st else None
+        t = st.get("tail_box")
+        if b and t:
+            return (min(b[0], t[0]), min(b[1], t[1]), max(b[2], t[2]), max(b[3], t[3]))
+        return b or t or (0, 0, 0, 0)
 
     @staticmethod
     def _alpha(done, now):
@@ -370,7 +343,7 @@ class DrawLayer:
         return 1.0 if age < SHOW_FOR else max(0.0, 1 - (age - SHOW_FOR) / FADE)
 
     def _paint(self, scr, strokes, active, now, boxes, full=False):
-        """Repaint only the changed boxes' bounding area, straight into the window's bitmap."""
+        """Repaint only the changed area, straight into the window's bitmap."""
         m = scr.mon
         w, h = m["width"], m["height"]
         base = 1 if active else 0  # alpha 1 while drawing: presses land here, not on the app below
@@ -389,26 +362,25 @@ class DrawLayer:
         scr.base = base
         if rx1 <= rx0 or ry1 <= ry0:
             return
+        region = (m["left"] + rx0, m["top"] + ry0, m["left"] + rx1, m["top"] + ry1)  # screen coords
+        lime = hud.ACCENT[:3]
+        layers = []
+        for st in strokes:
+            a = self._alpha(st["done"], now)
+            if a > 0 and _overlaps(self._box(st), {"left": region[0], "top": region[1],
+                                                   "width": region[2] - region[0], "height": region[3] - region[1]}):
+                layers.append((st["ink"].render(region, st.get("tail") or [], lime), a))
         img = Image.new("RGBA", (rx1 - rx0, ry1 - ry0), (0, 0, 0, base))
-        for which in (0, 1):  # every edge (shadow/outline) first, then all the lime on top
-            for st in strokes:
-                a = self._alpha(st["done"], now)
-                if a <= 0:
+        for which in (0, 1):  # every stroke's edge first, then all the lime on top
+            for parts, a in layers:
+                layer = parts[which]
+                if layer is None:
                     continue
-                for part in self._parts(st):
-                    layer, lx, ly = part[which], part[2], part[3]
-                    if layer is None:
-                        continue
-                    lx, ly = lx - m["left"] - rx0, ly - m["top"] - ry0  # into region coordinates
-                    cx0, cy0 = max(0, lx), max(0, ly)
-                    cx1, cy1 = min(img.width, lx + layer.width), min(img.height, ly + layer.height)
-                    if cx1 <= cx0 or cy1 <= cy0:
-                        continue
-                    piece = layer.crop((cx0 - lx, cy0 - ly, cx1 - lx, cy1 - ly))
-                    if a < 1:
-                        al = np.asarray(piece.getchannel("A"), dtype=np.float32) * a
-                        piece.putalpha(Image.fromarray(al.astype(np.uint8)))
-                    img.alpha_composite(piece, (cx0, cy0))
+                if a < 1:
+                    al = np.asarray(layer.getchannel("A"), dtype=np.float32) * a
+                    layer = layer.copy()
+                    layer.putalpha(Image.fromarray(al.astype(np.uint8)))
+                img.alpha_composite(layer)
         arr = np.asarray(img)
         alpha = arr[:, :, 3:4].astype(np.uint16)
         out = buf[ry0:ry1, rx0:rx1]
@@ -420,11 +392,128 @@ class DrawLayer:
                                    0, ctypes.byref(blend), 2)
 
 
-def _box(piece):
-    _, layer, x, y = piece
-    return (x, y, x + layer.width, y + layer.height)
-
-
 def _overlaps(b, mon):
     return b[0] < mon["left"] + mon["width"] and b[2] > mon["left"] and b[1] < mon["top"] + mon["height"] \
         and b[3] > mon["top"]
+
+
+class Ink:
+    """One stroke as a continuous brush trail: round dabs stamped close together into a high-res
+    mask (the lime) and a second mask (its shadow or outline). Pixels come from downscaling and
+    blurring the mask as a whole, so the line has even edges and no joins anywhere."""
+    SS = 3          # mask resolution: 3x screen pixels
+    GROW = 160      # px of spare canvas added around the stroke when it outgrows its mask
+    EDGE_PAD = 16   # px around the line the shadow/outline can reach
+
+    def __init__(self):
+        self.ox = self.oy = None  # screen position of the mask's top-left (1x)
+        self.w = self.h = 0
+        self.line_mask = self.edge_mask = None
+        self.committed = 0
+        self.extent = None        # screen box the committed ink covers
+        self.final = None         # (edge, line, x, y) rendered once when the stroke is finished
+
+    @staticmethod
+    def bbox(pts, pad=None):
+        pad = Ink.EDGE_PAD if pad is None else pad
+        return (int(min(x for x, _ in pts)) - pad, int(min(y for _, y in pts)) - pad,
+                int(max(x for x, _ in pts)) + pad + 1, int(max(y for _, y in pts)) + pad + 1)
+
+    def box(self):
+        return self.extent
+
+    def _style(self):
+        r = WIDTH / 2
+        if STYLE == "shadow":
+            return r + 1, 2.0   # edge dab radius, edge vertical offset
+        if STYLE == "outline":
+            return r + 1.5, 0.0
+        return None, 0.0
+
+    def _ensure(self, box):
+        if self.ox is not None and box[0] >= self.ox and box[1] >= self.oy and \
+                box[2] <= self.ox + self.w and box[3] <= self.oy + self.h:
+            return
+        x0, y0 = box[0] - self.GROW, box[1] - self.GROW
+        x1, y1 = box[2] + self.GROW, box[3] + self.GROW
+        if self.ox is not None:
+            x0, y0 = min(x0, self.ox), min(y0, self.oy)
+            x1, y1 = max(x1, self.ox + self.w), max(y1, self.oy + self.h)
+        new_line = Image.new("L", ((x1 - x0) * self.SS, (y1 - y0) * self.SS), 0)
+        new_edge = Image.new("L", new_line.size, 0)
+        if self.ox is not None:
+            at = ((self.ox - x0) * self.SS, (self.oy - y0) * self.SS)
+            new_line.paste(self.line_mask, at)
+            new_edge.paste(self.edge_mask, at)
+        self.ox, self.oy, self.w, self.h = x0, y0, x1 - x0, y1 - y0
+        self.line_mask, self.edge_mask = new_line, new_edge
+
+    @staticmethod
+    def _stamp(draws, pts, ox, oy, ss, specs):
+        """Round dabs along the polyline, spaced well under their radius: a perfectly even tube."""
+        for (draw, (radius, dy)) in zip(draws, specs):
+            if radius is None:
+                continue
+            r = radius * ss
+            step = max(1.0, r * 0.3)
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]) if len(pts) > 1 else [(pts[0], pts[0])]:
+                ax, ay = (x0 - ox) * ss, (y0 - oy + dy) * ss
+                bx, by = (x1 - ox) * ss, (y1 - oy + dy) * ss
+                n = max(1, int(math.hypot(bx - ax, by - ay) / step))
+                for i in range(n + 1):
+                    t = i / n
+                    cx, cy = ax + (bx - ax) * t, ay + (by - ay) * t
+                    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+
+    def commit(self, sm, upto):
+        """Stamp smoothed points [committed-1 .. upto) into the masks. Returns changed screen boxes."""
+        if upto <= self.committed and self.committed:
+            return []
+        seg = sm[max(0, self.committed - 1):upto]
+        if not seg:
+            return []
+        box = self.bbox(seg)
+        self._ensure(box)
+        edge_r, dy = self._style()
+        self._stamp((ImageDraw.Draw(self.line_mask), ImageDraw.Draw(self.edge_mask)), seg, self.ox, self.oy,
+                    self.SS, ((WIDTH / 2, 0.0), (edge_r, dy)))
+        self.committed = upto
+        e = self.extent
+        self.extent = box if e is None else (min(e[0], box[0]), min(e[1], box[1]),
+                                             max(e[2], box[2]), max(e[3], box[3]))
+        return [box]
+
+    def finish(self):
+        self.final = None  # rendered lazily for the whole stroke on the next paint
+
+    def render(self, region, tail, lime):
+        """(edge RGBA or None, line RGBA) for a screen region, with the live tip drawn in."""
+        if self.ox is None and not tail:
+            return None, None
+        rx0, ry0, rx1, ry1 = region
+        pad = 12  # room for the shadow blur
+        ex0, ey0, ex1, ey1 = rx0 - pad, ry0 - pad, rx1 + pad, ry1 + pad
+        ss = self.SS
+        if self.ox is not None:
+            crop = ((ex0 - self.ox) * ss, (ey0 - self.oy) * ss, (ex1 - self.ox) * ss, (ey1 - self.oy) * ss)
+            line_m, edge_m = self.line_mask.crop(crop), self.edge_mask.crop(crop)  # outside = empty
+        else:
+            line_m = Image.new("L", ((ex1 - ex0) * ss, (ey1 - ey0) * ss), 0)
+            edge_m = Image.new("L", line_m.size, 0)
+        edge_r, dy = self._style()
+        if tail:
+            self._stamp((ImageDraw.Draw(line_m), ImageDraw.Draw(edge_m)), tail, ex0, ey0, ss,
+                        ((WIDTH / 2, 0.0), (edge_r, dy)))
+        size = (ex1 - ex0, ey1 - ey0)
+        line_a = line_m.reduce(ss)
+        line = Image.new("RGBA", size, lime + (0,))
+        line.putalpha(line_a)
+        edge = None
+        if edge_r is not None:
+            edge_a = edge_m.reduce(ss)
+            if STYLE == "shadow":
+                edge_a = edge_a.filter(ImageFilter.GaussianBlur(5)).point(lambda v: v * 120 // 255)
+            edge = Image.new("RGBA", size, (12, 12, 12, 0) if STYLE == "outline" else (0, 0, 0, 0))
+            edge.putalpha(edge_a)
+            edge = edge.crop((pad, pad, size[0] - pad, size[1] - pad))
+        return edge, line.crop((pad, pad, size[0] - pad, size[1] - pad))

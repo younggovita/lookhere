@@ -78,6 +78,8 @@ def main():
          "/O" + os.path.join(HERE, "dist"), os.path.join(HERE, "installer.iss")])
     setup = os.path.join(HERE, "dist", "Lookhere-Setup-%s.exe" % version)
     print("Built %s (%.0f MB)" % (setup, os.path.getsize(setup) / 1e6))
+    # the plain-text guide to send alongside the installer
+    shutil.copyfile(os.path.join(HERE, "INSTALL.txt"), os.path.join(HERE, "dist", "Lookhere - How to install.txt"))
 
     if args.test:
         test_install(setup)

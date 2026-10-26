@@ -17,13 +17,14 @@ frames and transcript saved next to the video. A soft ding plays when recording 
 | red stop button on the pill | same as Ctrl+Alt+H: finish the recording |
 | **Esc** | cancel and delete |
 
-Shortcuts can be changed in `config.json` (`hotkey`, `pause_hotkey`, `draw_hotkey`).
+Change them from the tray: right-click > Settings > Shortcuts, click one, press the new keys.
+Keys another app already owns are refused.
 
 A floating pill at the top of the screen you're on shows what's happening: Arming (the screen
 video warms up for ~2s; your voice and clicks are already recording), Recording (timer and live
 mic meter), Paused, Drawing, Building (progress), then Copied. It is click-through and never
 appears in recordings. Colours: a black pill (dark) or white pill (light), acid lime accents in
-both (on black chips in light mode), red only while recording. Tray > **Theme**: Follow Windows
+both (on black chips in light mode), red only while recording. Tray > Settings > **Theme**: Follow Windows
 light/dark mode (default), Always dark, Always light. `theme-preview.png` shows every state.
 
 ## Tray menu
@@ -33,8 +34,12 @@ the right, greyed-out items when they don't apply). Left-click starts or finishe
   Folder, Delete (to the Recycle Bin). **Trim** shows the recording as a filmstrip with lime start
   and end handles; saving rebuilds the recording (video, transcript, frames) and copies it.
 - **Copy last recording again**
-- **Microphone**: Windows default or a specific mic; **Test microphone** shows a live meter.
-- **Start with Windows** (a per-user Run entry; the installer's checkbox sets the same thing)
+- **Settings**, a flyout holding:
+  - **Microphone**: Windows default or a specific mic; **Test microphone** shows a live meter.
+  - **Theme**: Follow Windows, Always dark, Always light.
+  - **Shortcuts**: record, pause, draw; click one and press the new keys.
+  - **Start with Windows** (a per-user Run entry; the installer's checkbox sets the same thing)
+  - **Open recordings folder**
 - **Check for updates** / **Update to x.y.z** (installed copies only)
 
 ## What it records

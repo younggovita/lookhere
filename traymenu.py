@@ -82,12 +82,18 @@ class Menu:
         # place it so it opens away from the click and stays on the screen
         self.top.update_idletasks()
         work = self._work_area(x, y)
+        self.side = "right"  # which way flyouts open; nested ones keep going the same way
         if align == "bottom-right":
             px, py = x - W, y - h
         else:  # a submenu beside its parent row
-            px, py = x, y
-            if px + W > work[2]:
-                px = x - W - (parent.top.winfo_width() if parent else 0)
+            py = y
+            self.side = parent.side if parent else "right"
+            left = (parent.rect[0] if parent else x) - W + 2
+            if self.side == "right" and x + W > work[2]:
+                self.side = "left"
+            elif self.side == "left" and left < work[0]:
+                self.side = "right"
+            px = x if self.side == "right" else left
         px = max(work[0] + 4, min(px, work[2] - W - 4))
         py = max(work[1] + 4, min(py, work[3] - h - 4))
         self.top.geometry("%dx%d+%d+%d" % (W, h, px, py))
@@ -95,7 +101,8 @@ class Menu:
         self.top.update_idletasks()
         _round_corners(self.top, p["edge"])
         self.c.bind("<Motion>", self._motion)
-        self.c.bind("<Leave>", lambda e: self._hover(None))
+        # leaving towards an open flyout keeps it open; otherwise just drop the highlight
+        self.c.bind("<Leave>", lambda e: None if self.child else self._hover(None))
         self.c.bind("<ButtonRelease-1>", self._click)
         self.top.bind("<Escape>", lambda e: self.close_all())
         self.hovered = None

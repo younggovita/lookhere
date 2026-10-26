@@ -873,7 +873,7 @@ class App:
         taken = [self.label(k) for k, v in self.keys.items() if not v.ok]
         if taken:
             self.hud.show("error", "%s taken by another app" % " and ".join(taken),
-                          "Change it in config.json (see README)", hold=8)
+                          "Right-click the tray icon > Settings > Shortcuts", hold=8)
 
     KEY_EVENTS = {"hotkey": "toggle", "pause_hotkey": "pause", "draw_hotkey": "draw"}
     KEY_TITLES = {"hotkey": "record", "pause_hotkey": "pause", "draw_hotkey": "draw"}
@@ -1172,6 +1172,11 @@ class App:
                                checked=(lambda v: lambda: CONFIG["theme"] == v)(v))
                           for l, v in (("Follow Windows light/dark", "auto"), ("Always dark", "dark"),
                                        ("Always light", "light"))]
+        # click one, then press the new keys (the pill asks; keys another app owns are refused)
+        shortcuts = lambda: [dict(label=title, hint=self.label(key), action=(lambda k: lambda: put(("change_hotkey", k)))(key),
+                                  enabled=lambda: self.state == "idle")
+                             for key, title in (("hotkey", "Record / finish"), ("pause_hotkey", "Pause / resume"),
+                                                ("draw_hotkey", "Draw on screen"))]
         items = [
             dict(label=lambda: "Finish recording" if rec() else "Start recording", hint=self.hotkey_label,
                  action=lambda: put("toggle"), enabled=lambda: self.state in ("idle", "recording")),
@@ -1183,10 +1188,14 @@ class App:
             dict(label="History", action=lambda: put("history")),
             dict(label="Copy last recording again", action=lambda: put("recopy")),
             dict(sep=True),
-            dict(label="Microphone", submenu=mics),
-            dict(label="Theme", submenu=themes),
-            dict(label="Start with Windows", action=lambda: put("toggle_autostart"), checked=autostart_enabled),
-            dict(label="Open recordings folder", action=lambda: put("open_folder")),
+            dict(label="Settings", submenu=lambda: [
+                dict(label="Microphone", submenu=mics),
+                dict(label="Theme", submenu=themes),
+                dict(label="Shortcuts", submenu=shortcuts),
+                dict(sep=True),
+                dict(label="Start with Windows", action=lambda: put("toggle_autostart"), checked=autostart_enabled),
+                dict(label="Open recordings folder", action=lambda: put("open_folder")),
+            ]),
             dict(sep=True),
         ]
         if self.update_info:

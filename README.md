@@ -27,6 +27,8 @@ both (on black chips in light mode), red only while recording. Tray > **Theme**:
 light/dark mode (default), Always dark, Always light. `theme-preview.png` shows every state.
 
 ## Tray menu
+Right-click the tray icon: Lookhere's own menu, styled like the pill (status at the top, shortcuts on
+the right, greyed-out items when they don't apply). Left-click starts or finishes a recording.
 - **History...**: every recording with a thumbnail, length and first words. Play, Copy, Trim,
   Folder, Delete (to the Recycle Bin). **Trim** shows the recording as a filmstrip with lime start
   and end handles; saving rebuilds the recording (video, transcript, frames) and copies it.
@@ -60,7 +62,7 @@ Written by the tray menu; you can also edit it: `hotkey`, `pause_hotkey`, `draw_
 
 ## Files
 - `screen_explain.py` tray app, hotkeys, capture; `process.py <recording_dir>` builds a recording
-- `hud.py` status pill; `draw.py` drawing layer; `history.py` History and Trim windows
+- `hud.py` status pill; `draw.py` drawing layer; `history.py` History and Trim; `traymenu.py` tray menu
 - `logo.py` logo; `updater.py` auto-update; `paths.py` where files live; `ding.wav` (`make_ding.py`)
 - `screen-explain.log` what happened; `process-last.log` the last build's errors
 

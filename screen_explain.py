@@ -744,6 +744,23 @@ def tray_image(state):
 IDLE, REC, BUSY = "idle", "rec", "busy"
 
 
+class TrayIcon(pystray.Icon):
+    """pystray's tray icon, but a right-click opens Lookhere's own styled menu (traymenu.py)
+    instead of the plain Windows one. Left-click still runs the default item (record/stop)."""
+
+    def __init__(self, *args, on_right=None, **kwargs):
+        self.on_right = on_right
+        super().__init__(*args, **kwargs)
+
+    def _on_notify(self, wparam, lparam):
+        if lparam == 0x0205 and self.on_right:  # WM_RBUTTONUP
+            pt = wt.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            self.on_right(pt.x, pt.y)
+            return
+        super()._on_notify(wparam, lparam)
+
+
 class Worker:
     """process.py started the moment recording starts, so the speech model loads while you talk.
     Told 'go' on stop (or 'cancel'). Reports progress lines back through `on_line`."""
@@ -811,8 +828,10 @@ class App:
         self.capture_target = "hotkey"
         self.update_info = None
         self.drawer = None
-        self.icon = pystray.Icon("lookhere", tray_image(IDLE), "Lookhere (%s to record)" % self.hotkey_label,
-                                 menu=pystray.Menu(
+        self.menu = None
+        self.icon = TrayIcon("lookhere", tray_image(IDLE), "Lookhere (%s to record)" % self.hotkey_label,
+                             on_right=lambda x, y: self.events.put(("tray_menu", x, y)),
+                             menu=pystray.Menu(
             pystray.MenuItem(lambda _: "Start / stop recording (%s)" % self.hotkey_label,
                              lambda *_: self.events.put("toggle"), default=True),
             pystray.MenuItem(lambda _: "Pause / resume (%s)" % self.label("pause_hotkey"),
@@ -888,6 +907,8 @@ class App:
                         self.recorder.cancel()  # synchronous: ffmpeg must not outlive the app
                     if self.drawer:
                         self.drawer.close()
+                    if self.menu:
+                        self.menu.close()
                     for k in self.keys.values():
                         k.stop()
                     self.icon.stop()
@@ -973,6 +994,10 @@ class App:
                 history._win.refresh()
         elif ev == "cancelled":
             self._reset()
+        elif callable(ev):  # work handed to the Tk thread (e.g. closing the tray menu)
+            ev()
+        elif isinstance(ev, tuple) and ev[0] == "tray_menu":
+            self.open_menu(ev[1], ev[2])
         elif isinstance(ev, tuple) and ev[0] == "theme":
             save_setting("theme", ev[1])
             self._apply_themes()
@@ -1133,6 +1158,61 @@ class App:
         else:
             self.hud.show("done", "Mic works", name[:50], hold=3)
         log("mic test %s: peak %.2f %s" % (name, peak, err or ""))
+
+    # ---------- tray menu ----------
+    def menu_items(self):
+        rec = lambda: self.state == "recording"
+        put = self.events.put
+        mics = lambda: [dict(label=n or "Windows default", action=(lambda v: lambda: put(("mic", v)))(n),
+                             checked=(lambda v: lambda: CONFIG["mic"] == v)(n))
+                        for n in [""] + input_devices()] + \
+            [dict(sep=True), dict(label="Test microphone", action=lambda: put(("mic", None)),
+                                  enabled=lambda: self.state == "idle")]
+        themes = lambda: [dict(label=l, action=(lambda v: lambda: put(("theme", v)))(v),
+                               checked=(lambda v: lambda: CONFIG["theme"] == v)(v))
+                          for l, v in (("Follow Windows light/dark", "auto"), ("Always dark", "dark"),
+                                       ("Always light", "light"))]
+        items = [
+            dict(label=lambda: "Finish recording" if rec() else "Start recording", hint=self.hotkey_label,
+                 action=lambda: put("toggle"), enabled=lambda: self.state in ("idle", "recording")),
+            dict(label=lambda: "Resume" if rec() and self.recorder.paused else "Pause",
+                 hint=self.label("pause_hotkey"), action=lambda: put("pause"), enabled=rec),
+            dict(label="Draw on screen", hint=self.label("draw_hotkey"), action=lambda: put("draw"), enabled=rec),
+            dict(label="Cancel recording", hint="Esc", action=lambda: put("cancel"), enabled=rec, danger=True),
+            dict(sep=True),
+            dict(label="History", action=lambda: put("history")),
+            dict(label="Copy last recording again", action=lambda: put("recopy")),
+            dict(sep=True),
+            dict(label="Microphone", submenu=mics),
+            dict(label="Theme", submenu=themes),
+            dict(label="Start with Windows", action=lambda: put("toggle_autostart"), checked=autostart_enabled),
+            dict(label="Open recordings folder", action=lambda: put("open_folder")),
+            dict(sep=True),
+        ]
+        if self.update_info:
+            items.append(dict(label="Update to %s" % self.update_info["version"], action=lambda: put("install_update")))
+        if CONFIG["check_updates"]:
+            items.append(dict(label="Check for updates", hint=paths.VERSION, action=lambda: put(("check_update", True))))
+        items.append(dict(label="Quit", action=lambda: put("quit")))
+        return items
+
+    def menu_status(self):
+        if self.state == "recording":
+            s = int(self.recorder.active_elapsed())
+            return ("Paused" if self.recorder.paused else "Recording") + " \u00b7 %d:%02d" % (s // 60, s % 60)
+        if self.state == "processing":
+            return "Building your recording"
+        return "Ready \u00b7 %s to record" % self.hotkey_label
+
+    def open_menu(self, x, y):
+        import traymenu
+        if self.menu:
+            self.menu.close_all()
+        self.menu = traymenu.Menu(self.root, self.menu_items(), x, y, on_close=self._menu_closed,
+                                  post=self.events.put, header=self.menu_status())
+
+    def _menu_closed(self):
+        self.menu = None
 
     # ---------- theme ----------
     def _apply_themes(self):

@@ -22,6 +22,7 @@ import hud
 user32 = hud.user32
 SHOW_FOR, FADE = 3.0, 0.6   # seconds a finished stroke stays, then fades
 WIDTH = 7                   # stroke width in px
+FPS = 60
 STYLE = "shadow"            # edge: "outline" (thin dark edge), "shadow" (soft drop shadow) or "plain"
 SS = 2                      # strokes are drawn at 2x and scaled down: smooth, anti-aliased edges
 
@@ -54,10 +55,12 @@ def smooth(points, passes=2):
     return pts
 
 
-def stroke_layer(pts, lime, style=None):
-    """One stroke as an anti-aliased RGBA image; returns (image, x, y) of its top-left corner."""
+def stroke_layer(pts, lime, style=None, presmoothed=False):
+    """A stroke (or piece of one) as an anti-aliased RGBA image; returns (image, x, y) of its top-left
+    corner in the same coordinates as pts."""
     style = style or STYLE
-    pts = smooth(pts)
+    if not presmoothed:
+        pts = smooth(pts)
     pad = WIDTH + 14
     x0, y0 = min(x for x, _ in pts) - pad, min(y for _, y in pts) - pad
     w = int(max(x for x, _ in pts) + pad - x0) + 1
@@ -120,7 +123,6 @@ class DrawLayer:
         self.lock = threading.Lock()
         self.listener = None
         self.closed = False
-        self._cache = {}
         ready = threading.Event()
         threading.Thread(target=self._thread, args=(ready,), daemon=True, name="draw").start()
         ready.wait(5)
@@ -174,52 +176,97 @@ class DrawLayer:
         self.mode_changed = True
         ready.set()
         msg = wt.MSG()
-        last = {}
+        frame = 1 / FPS
+        next_t = time.perf_counter()
         while not self.closed:
             while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
             try:
-                busy = self._frame(last)
+                busy = self._frame()
             except Exception:
                 self.on_error("draw frame failed:\n" + traceback.format_exc())
                 busy = False
                 time.sleep(0.2)
-            time.sleep(1 / 60 if busy else 0.03)
+            # fixed 60 fps clock (not "sleep after the work"), so frames land evenly
+            next_t += frame if busy else 0.03
+            delay = next_t - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_t = time.perf_counter()
         for s in self.screens:
             user32.ShowWindow(s.hwnd, 0)
 
-    def _frame(self, last):
+    # A stroke is drawn in pieces: once part of the line can't change any more it is rendered
+    # once and kept; each frame only the live tip is rendered. Cost stays flat however long
+    # the stroke gets.
+    CHUNK, SETTLE = 48, 24  # smoothed points per frozen piece; points near the tip still moving
+
+    def _update(self, st, pts, lime):
+        """Bring a stroke's rendered pieces up to date. Returns the screen boxes that changed."""
+        changed = []
+        if st.get("final"):
+            return changed
+        sm = smooth(pts) if len(pts) > 1 else [pts[0], pts[0]]
+        pieces = st.setdefault("pieces", [])
+        frozen = st.get("frozen", 0)
+        while len(sm) - frozen > self.CHUNK + self.SETTLE:
+            a, b = max(0, frozen - 1), frozen + self.CHUNK + 1
+            pieces.append(stroke_layer(sm[a:b], lime, presmoothed=True))
+            frozen += self.CHUNK
+        st["frozen"] = frozen
+        tail_pts = sm[max(0, frozen - 1):]
+        if st.get("tail_len") != len(sm) or st["done"] is not None:
+            old = st.get("tail")
+            st["tail"] = stroke_layer(tail_pts, lime, presmoothed=True)
+            st["tail_len"] = len(sm)
+            if old:
+                changed.append(_box(old))
+            changed.append(_box(st["tail"]))
+        if st["done"] is not None:
+            st["final"] = True
+        return changed
+
+    def _frame(self):
         now = time.monotonic()
+        lime = hud.ACCENT[:3]
         with self.lock:
-            # drop strokes that have fully faded
-            self.strokes = [s for s in self.strokes if s["done"] is None or now - s["done"] < SHOW_FOR + FADE]
-            snapshot = [(s["points"] if s["done"] else list(s["points"]), s["done"]) for s in self.strokes]
-            if not self.strokes:
-                self._cache = {}
+            gone = [s for s in self.strokes if s["done"] is not None and now - s["done"] >= SHOW_FOR + FADE]
+            self.strokes = [s for s in self.strokes if s not in gone]
+            strokes = list(self.strokes)
+            pts_now = {id(s): (s["points"] if s["done"] else list(s["points"])) for s in strokes}
             active = self.active
             mode_changed, self.mode_changed = self.mode_changed, False
-        busy = bool(snapshot)
+        dirty = []
+        for st in strokes:
+            dirty += self._update(st, pts_now[id(st)], lime)
+            a = self._alpha(st["done"], now)
+            if a < 1 or st.get("last_alpha", 1.0) != a:  # fading: its whole box changes
+                dirty += [_box(p) for p in self._parts(st)]
+            st["last_alpha"] = a
+        for st in gone:
+            dirty += [_box(p) for p in self._parts(st)]
         for scr in self.screens:
-            mine = [(p, d) for p, d in snapshot if any(scr.contains(x, y) for x, y in p)]
-            if not active and not mine:
+            mine = [st for st in strokes if any(_overlaps(_box(p), scr.mon) for p in self._parts(st))]
+            if not active and not mine and not any(_overlaps(b, scr.mon) for b in dirty):
                 if scr.shown:
                     user32.ShowWindow(scr.hwnd, 0)
                     scr.shown = False
                 continue
-            key = (active, tuple((len(p), d) for p, d in mine),
-                   tuple(round(self._alpha(d, now), 2) for _, d in mine))
-            if key == last.get(scr.hwnd) and not mode_changed:
-                continue
-            last[scr.hwnd] = key
             if mode_changed:
-                ex = EX_BASE | (0 if active else EX_CLICK_THROUGH)
-                user32.SetWindowLongW(scr.hwnd, -20, ex)
-            self._paint(scr, mine, active, now, full=mode_changed)
+                user32.SetWindowLongW(scr.hwnd, -20, EX_BASE | (0 if active else EX_CLICK_THROUGH))
+            boxes = [b for b in dirty if _overlaps(b, scr.mon)]
+            if boxes or mode_changed or not scr.shown:
+                self._paint(scr, mine, active, now, boxes, full=mode_changed or not scr.shown)
             if not scr.shown:
                 user32.ShowWindow(scr.hwnd, 4)  # SW_SHOWNOACTIVATE
                 scr.shown = True
-        return busy or active
+        return bool(strokes) or active
+
+    @staticmethod
+    def _parts(st):
+        return st.get("pieces", []) + ([st["tail"]] if st.get("tail") else [])
 
     @staticmethod
     def _alpha(done, now):
@@ -228,58 +275,42 @@ class DrawLayer:
         age = now - done
         return 1.0 if age < SHOW_FOR else max(0.0, 1 - (age - SHOW_FOR) / FADE)
 
-    def _paint(self, scr, strokes, active, now, full=False):
-        """Repaint only the box around the strokes (plus last frame's box, to erase), straight into
-        the window's bitmap; a full-monitor repaint every frame would be ~10 fps."""
+    def _paint(self, scr, strokes, active, now, boxes, full=False):
+        """Repaint only the changed boxes' bounding area, straight into the window's bitmap."""
         m = scr.mon
         w, h = m["width"], m["height"]
         base = 1 if active else 0  # alpha 1 while drawing: presses land here, not on the app below
         fresh = scr.surface.size != (w, h)
         scr.surface.ensure(w, h)
         buf = np.ctypeslib.as_array(ctypes.cast(scr.surface.bits, ctypes.POINTER(ctypes.c_uint8)), shape=(h, w, 4))
-        pad = WIDTH + 16
-        boxes = []
-        for pts, done in strokes:
-            if pts:
-                boxes.append((min(x for x, _ in pts) - m["left"] - pad, min(y for _, y in pts) - m["top"] - pad,
-                              max(x for x, _ in pts) - m["left"] + pad, max(y for _, y in pts) - m["top"] + pad))
         if full or fresh or getattr(scr, "base", None) != base:
-            region = (0, 0, w, h)
+            rx0, ry0, rx1, ry1 = 0, 0, w, h
         else:
-            allb = boxes + ([scr.prev_box] if getattr(scr, "prev_box", None) else [])
-            if not allb:
+            if not boxes:
                 return
-            region = (max(0, min(b[0] for b in allb)), max(0, min(b[1] for b in allb)),
-                      min(w, max(b[2] for b in allb)), min(h, max(b[3] for b in allb)))
+            rx0 = max(0, min(b[0] for b in boxes) - m["left"])
+            ry0 = max(0, min(b[1] for b in boxes) - m["top"])
+            rx1 = min(w, max(b[2] for b in boxes) - m["left"])
+            ry1 = min(h, max(b[3] for b in boxes) - m["top"])
         scr.base = base
-        scr.prev_box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
-                        max(b[2] for b in boxes), max(b[3] for b in boxes)) if boxes else None
-        rx0, ry0, rx1, ry1 = (int(v) for v in region)
         if rx1 <= rx0 or ry1 <= ry0:
             return
         img = Image.new("RGBA", (rx1 - rx0, ry1 - ry0), (0, 0, 0, base))
-        lime = hud.ACCENT[:3]
-        for pts, done in strokes:
-            a = self._alpha(done, now)
-            if a <= 0 or not pts:
+        for st in strokes:
+            a = self._alpha(st["done"], now)
+            if a <= 0:
                 continue
-            local = [(x - m["left"] - rx0, y - m["top"] - ry0) for x, y in pts]
-            key = (id(pts), len(pts), done is not None, rx0, ry0)
-            cached = self._cache.get(key)
-            if cached is None:
-                cached = stroke_layer(local, lime)
-                if done is not None:  # finished: keep its image while it fades
-                    self._cache[key] = cached
-            layer, lx, ly = cached
-            layer = layer.copy() if a < 1 else layer
-            if a < 1:
-                al = np.asarray(layer.getchannel("A"), dtype=np.float32) * a
-                layer.putalpha(Image.fromarray(al.astype(np.uint8)))
-            # paste the stroke's box, clipped to the repainted region
-            cx0, cy0 = max(0, lx), max(0, ly)
-            cx1, cy1 = min(img.width, lx + layer.width), min(img.height, ly + layer.height)
-            if cx1 > cx0 and cy1 > cy0:
-                img.alpha_composite(layer.crop((cx0 - lx, cy0 - ly, cx1 - lx, cy1 - ly)), (cx0, cy0))
+            for layer, lx, ly in self._parts(st):
+                lx, ly = lx - m["left"] - rx0, ly - m["top"] - ry0  # into region coordinates
+                cx0, cy0 = max(0, lx), max(0, ly)
+                cx1, cy1 = min(img.width, lx + layer.width), min(img.height, ly + layer.height)
+                if cx1 <= cx0 or cy1 <= cy0:
+                    continue
+                piece = layer.crop((cx0 - lx, cy0 - ly, cx1 - lx, cy1 - ly))
+                if a < 1:
+                    al = np.asarray(piece.getchannel("A"), dtype=np.float32) * a
+                    piece.putalpha(Image.fromarray(al.astype(np.uint8)))
+                img.alpha_composite(piece, (cx0, cy0))
         arr = np.asarray(img)
         alpha = arr[:, :, 3:4].astype(np.uint16)
         out = buf[ry0:ry1, rx0:rx1]
@@ -289,3 +320,13 @@ class DrawLayer:
         user32.UpdateLayeredWindow(scr.hwnd, None, ctypes.byref(wt.POINT(m["left"], m["top"])),
                                    ctypes.byref(wt.SIZE(w, h)), scr.surface.mem, ctypes.byref(wt.POINT(0, 0)),
                                    0, ctypes.byref(blend), 2)
+
+
+def _box(piece):
+    layer, x, y = piece
+    return (x, y, x + layer.width, y + layer.height)
+
+
+def _overlaps(b, mon):
+    return b[0] < mon["left"] + mon["width"] and b[2] > mon["left"] and b[1] < mon["top"] + mon["height"] \
+        and b[3] > mon["top"]

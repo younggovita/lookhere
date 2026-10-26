@@ -454,7 +454,7 @@ class Hud:
         else:
             d.ellipse((c - r, c - r, c + r, c + r), fill=TEXT[:3] + (26,))
             ink = TEXT[:3]
-        self._pen_glyph(d, c, u, ink)
+        self._pen_onto(patch, c, u, ink)
         s = self.scale
         self._paste_patch(img, patch, cx - size / 2 * s, cy - size / 2 * s)
 
@@ -472,10 +472,31 @@ class Hud:
 
     @staticmethod
     def _pen_glyph(d, c, u, ink):
-        # a pencil, tilted: body, tip and a little nib
-        d.line([(c - 5.5 * u, c + 5.5 * u), (c + 5 * u, c - 5 * u)], fill=ink + (255,), width=round(3.6 * u))
-        d.polygon([(c - 7.6 * u, c + 7.6 * u), (c - 6.6 * u, c + 3.6 * u), (c - 3.6 * u, c + 6.6 * u)],
-                  fill=ink + (255,))
+        """A pencil at 45 degrees, tip bottom-left: graphite point, sharpened wood, body, metal band
+        and eraser. Gaps are cut with transparent pixels so it reads cleanly at small sizes."""
+        L, hw = 20.0, 3.6                      # length and half-width (logical px)
+        tip = (c - 7.1 * u, c + 7.1 * u)
+        ax, ay = 0.7071, -0.7071               # along the pencil, towards the eraser
+        nx, ny = 0.7071, 0.7071                # across it
+
+        def at(s, k=0.0):  # point s along the axis, k across
+            return (tip[0] + (ax * s + nx * k) * u, tip[1] + (ay * s + ny * k) * u)
+
+        solid, cut = ink + (255,), (0, 0, 0, 0)
+        d.polygon([at(0), at(6, -hw), at(6, hw)], fill=solid)                              # wood cone
+        d.polygon([at(6, -hw), at(L - 4.6, -hw), at(L - 4.6, hw), at(6, hw)], fill=solid)  # body
+        d.polygon([at(L - 3.4, -hw), at(L - 0.9, -hw), at(L, -hw + 0.9), at(L, hw - 0.9),
+                   at(L - 0.9, hw), at(L - 3.4, hw)], fill=solid)                           # eraser
+        gap = max(1, round(1.1 * u))
+        d.line([at(6, -hw - 1), at(6, hw + 1)], fill=cut, width=gap)                        # wood | body
+        d.line([at(L - 4, -hw - 1), at(L - 4, hw + 1)], fill=cut, width=gap)                # body | band
+        d.line([at(2.4, -hw), at(2.4, hw)], fill=cut, width=max(1, round(0.9 * u)))         # graphite tip
+
+    def _pen_onto(self, patch, c, u, ink):
+        """Draw the pencil on its own layer, so its cut-out gaps don't punch through what's under it."""
+        layer = Image.new("RGBA", patch.size, (0, 0, 0, 0))
+        self._pen_glyph(ImageDraw.Draw(layer), c, u, ink)
+        patch.alpha_composite(layer)
 
     def bring_to_front(self):
         """Keep the pill above other topmost windows (the drawing layer)."""
@@ -519,7 +540,7 @@ class Hud:
         elif kind == "pen":
             if CHIP:
                 d.ellipse((c - 15 * u, c - 15 * u, c + 15 * u, c + 15 * u), fill=CHIP + (255,))
-            self._pen_glyph(d, c, u, color)
+            self._pen_onto(patch, c, u, color)
         elif kind == "key":  # a keycap
             k = (7.5 if CHIP else 10) * u
             d.rounded_rectangle((c - k, c - k, c + k, c + k), radius=4 * u, outline=color + (255,), width=round(2.4 * u))

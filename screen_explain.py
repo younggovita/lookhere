@@ -1312,8 +1312,13 @@ class App:
             self.finish(rec_dir, False)
 
     def finish(self, rec_dir, ok):
-        self._reset()
         self.worker = None
+        try:
+            self._deliver(rec_dir, ok)
+        finally:
+            self._reset()  # only "idle" once the recording is on the clipboard
+
+    def _deliver(self, rec_dir, ok):
         if not ok:
             self.hud.show("error", "Couldn't build the recording", "See screen-explain.log", hold=5)
             return

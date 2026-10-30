@@ -9,7 +9,7 @@ import tkinter as tk
 from PIL import Image, ImageDraw, ImageTk
 
 import history
-from history import Pill, hexc, palette, round_rect
+from history import Pill, hexc, palette, round_rect, tkfont
 
 _win = None
 W = 520  # card width (px)
@@ -17,6 +17,8 @@ W = 520  # card width (px)
 
 def open_window(app):
     global _win
+    if history.paths.MAC:
+        history.mac.activate()
     if _win is not None and _win.top.winfo_exists():
         _win.refresh()
         _win.top.deiconify()
@@ -87,6 +89,7 @@ class SettingsWindow:
         import screen_explain as se
         self.p = p = palette()
         self.images = []
+        keep = "+%d+%d" % (self.top.winfo_x(), self.top.winfo_y()) if self.body else None  # a Mac moves it otherwise
         self.top.configure(bg=hexc(p["bg"]))
         history.dark_title_bar(self.top, p["dark"])
         if self.body:
@@ -102,19 +105,19 @@ class SettingsWindow:
         self.images.append(img)
         tk.Label(head, image=img, bg=hexc(p["bg"])).pack(side="left", padx=(0, 12))
         tk.Label(head, text="Settings", bg=hexc(p["bg"]), fg=hexc(p["text"]),
-                 font=("Segoe UI Semibold", 18)).pack(side="left")
+                 font=tkfont(18, True)).pack(side="left")
 
         # microphone: pick one (picking runs the mic test), or test the current one
         card = self.card("Microphone", "Test", lambda: put(("mic", None)))
         for name in [""] + se.input_devices():
-            self.choice(card, name or "Windows default", se.CONFIG["mic"] == name,
+            self.choice(card, name or se.MIC_DEFAULT, se.CONFIG["mic"] == name,
                         (lambda v: lambda: put(("mic", v)))(name))
 
         # theme
         card = self.card("Theme")
         row = tk.Frame(card, bg=hexc(p["card"]))
         row.pack(anchor="w", pady=4)
-        for label, value in (("Follow Windows", "auto"), ("Dark", "dark"), ("Light", "light")):
+        for label, value in ((se.THEME_AUTO, "auto"), ("Dark", "dark"), ("Light", "light")):
             on = se.CONFIG["theme"] == value
             Pill(row, label, (lambda v: lambda: put(("theme", v)))(value), p, p["card"],
                  "lime" if on else "plain").pack(side="left", padx=(0, 6))
@@ -134,11 +137,11 @@ class SettingsWindow:
             self.images.append(chip)
             tk.Label(row, image=chip, bg=hexc(p["card"])).pack(side="right", padx=10)
         tk.Label(card, text="Click Change, then press the new keys. Keys another app already uses are refused.",
-                 bg=hexc(p["card"]), fg=hexc(p["muted"]), font=("Segoe UI", 9)).pack(anchor="w", pady=(6, 0))
+                 bg=hexc(p["card"]), fg=hexc(p["muted"]), font=tkfont(9)).pack(anchor="w", pady=(6, 0))
 
         # general
         card = self.card("General")
-        row = self.row(card, "Start with Windows")
+        row = self.row(card, se.AUTOSTART_TEXT[0])
         sw = ImageTk.PhotoImage(switch_image(se.autostart_enabled(), p))
         self.images.append(sw)
         lab = tk.Label(row, image=sw, bg=hexc(p["card"]), cursor="hand2")
@@ -148,9 +151,11 @@ class SettingsWindow:
         Pill(row, "Open", lambda: put("open_folder"), p, p["card"]).pack(side="right")
         folder = se.CONFIG["recordings_dir"]
         tk.Label(card, text=folder if len(folder) < 64 else "..." + folder[-61:], bg=hexc(p["card"]),
-                 fg=hexc(p["muted"]), font=("Segoe UI", 9)).pack(anchor="w")
+                 fg=hexc(p["muted"]), font=tkfont(9)).pack(anchor="w")
 
         self.finish_cards()
+        if keep and history.paths.MAC:
+            self.top.geometry(keep)
 
     def card(self, title, action=None, command=None):
         """A section heading and a rounded card; returns the frame to fill."""
@@ -158,7 +163,7 @@ class SettingsWindow:
         head = tk.Frame(self.body, bg=hexc(p["bg"]))
         head.pack(fill="x", pady=(16, 6))
         tk.Label(head, text=title.upper(), bg=hexc(p["bg"]), fg=hexc(p["muted"]),
-                 font=("Segoe UI Semibold", 9)).pack(side="left", padx=4)
+                 font=tkfont(9, True)).pack(side="left", padx=4)
         if action:
             Pill(head, action, command, p, p["bg"]).pack(side="right")
         canvas = tk.Canvas(self.body, width=W, highlightthickness=0, bd=0, bg=hexc(p["bg"]))
@@ -184,7 +189,7 @@ class SettingsWindow:
         p = self.p
         row = tk.Frame(card, bg=hexc(p["card"]))
         row.pack(fill="x", pady=5)
-        tk.Label(row, text=title, bg=hexc(p["card"]), fg=hexc(p["text"]), font=("Segoe UI", 11)).pack(side="left")
+        tk.Label(row, text=title, bg=hexc(p["card"]), fg=hexc(p["text"]), font=tkfont(11)).pack(side="left")
         return row
 
     def choice(self, card, label, on, command):
@@ -199,7 +204,7 @@ class SettingsWindow:
         a = tk.Label(row, image=tick, bg=hexc(p["card"]))
         a.pack(side="left", padx=(0, 10))
         b = tk.Label(row, text=label, bg=hexc(p["card"]), fg=hexc(p["text"] if on else p["muted"]),
-                     font=("Segoe UI", 10), anchor="w")
+                     font=tkfont(10), anchor="w")
         b.pack(side="left", fill="x", expand=True)
         for w in (row, a, b):
             w.bind("<Button-1>", lambda e: command())

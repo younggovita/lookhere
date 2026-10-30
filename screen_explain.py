@@ -13,6 +13,7 @@ import ctypes.wintypes as wt
 import json
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import sys
@@ -20,14 +21,19 @@ import threading
 import time
 import tkinter as tk
 import traceback
-import winsound
 from datetime import datetime, timedelta
 
-# Physical pixel coordinates everywhere (mss, pynput, cursor) must agree.
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    ctypes.windll.user32.SetProcessDPIAware()
+import paths
+
+if paths.MAC:
+    import mac
+else:
+    import winsound
+    # Physical pixel coordinates everywhere (mss, pynput, cursor) must agree.
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        ctypes.windll.user32.SetProcessDPIAware()
 
 import mss
 import numpy as np
@@ -37,10 +43,18 @@ import soundfile as sf
 from PIL import Image, ImageDraw
 from pynput import keyboard, mouse
 
-import hud
 import logo
-import paths
+
 from hud import Hud
+
+# Words that differ between the two systems, for the pill and the menu.
+OS_NAME = "macOS" if paths.MAC else "Windows"
+PASTE_KEYS = "Cmd+V" if paths.MAC else "Ctrl+V"
+MENU_HINT = "Click the menu bar icon" if paths.MAC else "Right-click the tray icon"
+MIC_DEFAULT = "System default" if paths.MAC else "Windows default"
+THEME_AUTO = "System" if paths.MAC else "Follow Windows"
+AUTOSTART_TEXT = (("Open at login", "Opens at login", "Won't open at login") if paths.MAC
+                  else ("Start with Windows", "Starts with Windows", "Won't start with Windows"))
 
 HERE = paths.DATA  # recordings, logs and config.json (next to the code when run from source)
 CONFIG = {
@@ -71,8 +85,9 @@ if os.path.exists(_cfg_path):
     with open(_cfg_path, encoding="utf-8") as f:
         CONFIG.update(json.load(f))
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+if not paths.MAC:
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
 LOG_PATH = os.path.join(HERE, "screen-explain.log")
 
 
@@ -83,6 +98,8 @@ def log(msg):
 
 
 def cursor_pos():
+    if paths.MAC:
+        return mac.cursor_pos()
     pt = wt.POINT()
     user32.GetCursorPos(ctypes.byref(pt))
     return pt.x, pt.y
@@ -96,6 +113,8 @@ def window_title(hwnd):
 
 
 def foreground_title():
+    if paths.MAC:
+        return mac.foreground_title()
     return window_title(user32.GetForegroundWindow())
 
 
@@ -116,19 +135,22 @@ class _JobLimits(ctypes.Structure):
                 ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
 
-_k32 = ctypes.WinDLL("kernel32")
-_k32.CreateJobObjectW.restype = wt.HANDLE
-_k32.OpenProcess.restype = wt.HANDLE
-_k32.AssignProcessToJobObject.argtypes = [wt.HANDLE, wt.HANDLE]
-_k32.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
-_JOB = _k32.CreateJobObjectW(None, None)
-_lim = _JobLimits()
-_lim.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-_k32.SetInformationJobObject(_JOB, 9, ctypes.byref(_lim), ctypes.sizeof(_lim))
+if not paths.MAC:
+    _k32 = ctypes.WinDLL("kernel32")
+    _k32.CreateJobObjectW.restype = wt.HANDLE
+    _k32.OpenProcess.restype = wt.HANDLE
+    _k32.AssignProcessToJobObject.argtypes = [wt.HANDLE, wt.HANDLE]
+    _k32.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    _JOB = _k32.CreateJobObjectW(None, None)
+    _lim = _JobLimits()
+    _lim.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    _k32.SetInformationJobObject(_JOB, 9, ctypes.byref(_lim), ctypes.sizeof(_lim))
 
 
 def tie_to_app(proc):
     """Child processes (ffmpeg, the worker) die with the app, even if it crashes."""
+    if paths.MAC:  # no job objects on a Mac. TODO (port): stop ffmpeg/the worker if the app crashes
+        return proc
     h = _k32.OpenProcess(0x1F0FFF, False, proc.pid)
     if h:
         _k32.AssignProcessToJobObject(_JOB, h)
@@ -151,7 +173,7 @@ def video_encoder():
         for enc in candidates:
             r = subprocess.run([exe, "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:r=30", "-frames:v", "5",
                                 "-pix_fmt", "nv12", "-c:v", enc, "-f", "null", "-"],
-                               capture_output=True, creationflags=0x08000000)
+                               capture_output=True, creationflags=paths.NO_WINDOW)
             if r.returncode == 0:
                 _ENCODER = enc
                 break
@@ -185,7 +207,7 @@ class ScreenVideo:
             cmd += ["-map", "[v%d]" % i, "-c:v", enc, *quality, "-y", os.path.join(rec_dir, name)]
         self.proc = tie_to_app(subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                 stderr=open(os.path.join(rec_dir, "ffmpeg.log"), "w"),
-                                                text=True, creationflags=0x08000000))
+                                                text=True, creationflags=paths.NO_WINDOW))
         threading.Thread(target=self._read_progress, daemon=True).start()
 
     def _read_progress(self):
@@ -199,6 +221,9 @@ class ScreenVideo:
                 if us > 0:
                     self.start_mono = time.monotonic() - us / 1e6
 
+    def ended(self):
+        return self.proc.poll() is not None
+
     def stop(self):
         try:
             self.proc.stdin.write("q")
@@ -207,6 +232,41 @@ class ScreenVideo:
         except Exception:
             self.proc.kill()
         return self.proc.returncode
+
+
+class MacScreenVideo:
+    """ScreenVideo on a Mac: ScreenCaptureKit, one .mp4 per display, real cursor. ffmpeg's
+    avfoundation input would also record the status pill; ScreenCaptureKit leaves it out.
+    Capture starts on a thread (~0.5s), so starting a recording never waits for it."""
+
+    def __init__(self, rec_dir, n_outputs, fps=30):
+        self.files = ["screen%d.mp4" % i for i in range(n_outputs)]
+        self.recs = []
+        self.error = None
+        self.rec_dir = rec_dir
+
+        def start():
+            try:
+                for i, d in enumerate(mac.displays()[:n_outputs]):
+                    self.recs.append(mac.ScreenRecording(d, os.path.join(rec_dir, self.files[i]), fps))
+            except Exception as e:
+                self.error = repr(e)
+                log("screen video failed: %s" % self.error)
+                with open(os.path.join(rec_dir, "ffmpeg.log"), "w") as f:  # where the logs point
+                    f.write(self.error + "\n")
+        self.starter = threading.Thread(target=start, daemon=True, name="screen-video")
+        self.starter.start()
+
+    @property
+    def start_mono(self):
+        return self.recs[0].start_mono if self.recs and self.recs[0].start_mono else None
+
+    def ended(self):
+        return self.error is not None or any(r.finished.is_set() for r in self.recs)
+
+    def stop(self):
+        self.starter.join(timeout=10)
+        return max([1 if self.error else 0] + [r.stop() for r in self.recs])
 
 
 def thumb(img):
@@ -272,9 +332,15 @@ class SystemHotkey:
             user32.PostThreadMessageW(self.thread_id, 0x0012, 0, 0)  # WM_QUIT
 
 
+if paths.MAC:
+    SystemHotkey = mac.Hotkey  # Carbon RegisterEventHotKey: same behaviour, same interface (ok, stop)
+
+
 def hotkey_label(spec):
-    """'<ctrl>+<alt>+h' -> 'Ctrl+Alt+H'."""
+    """'<ctrl>+<alt>+h' -> 'Ctrl+Alt+H' (on a Mac 'Ctrl+Option+H', Cmd for the Command key)."""
     names = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "cmd": "Win", "win": "Win", "space": "Space"}
+    if paths.MAC:
+        names.update(alt="Option", cmd="Cmd", win="Cmd")
     return "+".join(names.get(p.strip("<>"), p.strip("<>").upper()) for p in spec.lower().split("+"))
 
 
@@ -302,8 +368,11 @@ class ShortcutCapture:
         self.report = report
         self.held = set()
         self.done = False
-        self.listener = keyboard.Listener(on_press=self._press, on_release=self._release)
-        self.listener.start()
+        if paths.MAC:  # Settings is in front: its own key presses need no Accessibility
+            self.listener = mac.on_key(self._mac_key)
+        else:
+            self.listener = keyboard.Listener(on_press=self._press, on_release=self._release)
+            self.listener.start()
         self.timer = threading.Timer(timeout, lambda: self._finish(("capture_cancelled", "timeout")))
         self.timer.start()
 
@@ -313,6 +382,15 @@ class ShortcutCapture:
             self.timer.cancel()
             self.listener.stop()
             self.report(result)
+
+    def _mac_key(self, vk, mods):
+        name = mac.key_name(vk)
+        if name == "esc":
+            self._finish(("capture_cancelled", "esc"))
+        elif name and not mods and not name.startswith("f"):
+            self.report(("capture_hint", "Add Ctrl, Option, Shift or Cmd to %s" % name.upper()))
+        elif name:
+            self._finish(("captured", "+".join(["<%s>" % m for m in ("ctrl", "alt", "shift", "cmd") if m in mods] + [name])))
 
     def _release(self, key):
         name = getattr(key, "name", None)
@@ -327,17 +405,21 @@ class ShortcutCapture:
             self._finish(("capture_cancelled", "esc"))
             return
         vk = getattr(key, "vk", None) or getattr(getattr(key, "value", None), "vk", None)
+        if paths.MAC and not name:  # Mac key codes aren't letters (and Option changes the character)
+            name = mac.key_name(vk)
+            vk = None
         if name and name.startswith("f") and name[1:].isdigit():
             main = name
-        elif name == "space":
-            main = "space"
+        elif name == "space" or (paths.MAC and name in mac.KEYCODES):
+            main = name
         elif vk and (0x41 <= vk <= 0x5A or 0x30 <= vk <= 0x39):
             main = chr(vk).lower()
         else:
             return  # arrows, Enter etc. aren't offered as shortcuts
         mods = [m for m in ("ctrl", "alt", "shift", "cmd") if m in self.held]
         if not mods and not main.startswith("f"):
-            self.report(("capture_hint", "Add Ctrl, Alt, Shift or Win to %s" % main.upper()))
+            self.report(("capture_hint", "Add %s to %s" % ("Ctrl, Option, Shift or Cmd" if paths.MAC
+                                                         else "Ctrl, Alt, Shift or Win", main.upper())))
             return
         self._finish(("captured", "+".join(["<%s>" % m for m in mods] + [main])))
 
@@ -373,7 +455,7 @@ class Recorder:
         try:
             with mss.MSS() as sct:
                 n_mon = len(sct.monitors) - 1
-            self.video = ScreenVideo(self.dir, n_mon)
+            self.video = (MacScreenVideo if paths.MAC else ScreenVideo)(self.dir, n_mon)
         except Exception as e:
             log("screen video unavailable, preview will be a slideshow: %r" % e)
 
@@ -385,8 +467,9 @@ class Recorder:
         self.audio_file = sf.SoundFile(os.path.join(self.dir, "audio.wav"), mode="w",
                                        samplerate=self.samplerate, channels=channels, subtype="PCM_16")
         self.mic_name = dev["name"]
-        self.stream = sd.InputStream(device=dev_index, samplerate=self.samplerate, channels=channels,
-                                     callback=self._on_audio)
+        self.stream = input_stream(dev_index, self.samplerate, channels, self._on_audio)
+        if paths.MAC:  # the mic process takes a moment to start: keep audio.wav aligned with t0
+            self.audio_q.put(np.zeros((int((time.monotonic() - self.t0) * self.samplerate), channels), np.float32))
         self.audio_thread = threading.Thread(target=self._audio_writer, daemon=True)
         self.audio_thread.start()
         self.stream.start()
@@ -426,7 +509,7 @@ class Recorder:
     @property
     def armed(self):
         """True once the screen video is live (or will never be)."""
-        return self.video is None or self.video.start_mono is not None or self.video.proc.poll() is not None
+        return self.video is None or self.video.start_mono is not None or self.video.ended()
 
     def _on_audio(self, data, *_):
         if self.paused:  # keep the timeline intact, record nothing
@@ -589,6 +672,8 @@ class Recorder:
 def set_clipboard(text, files=()):
     """Put text and, optionally, files on the clipboard. With files, Ctrl+V in Claude attaches
     them (like copying a file in Explorer); the text is there for apps that only take text."""
+    if paths.MAC:
+        return mac.set_clipboard(text, files)
     CF_UNICODETEXT, CF_HDROP, GMEM_MOVEABLE = 13, 15, 0x0002
     kernel32.GlobalAlloc.restype = wt.HGLOBAL
     kernel32.GlobalLock.restype = wt.LPVOID
@@ -617,8 +702,8 @@ def set_clipboard(text, files=()):
             # DROPFILES header: offset to file list (20), drop point, fNC, fWide=1; then a
             # double-null-terminated UTF-16 list of paths.
             header = (20).to_bytes(4, "little") + bytes(12) + (1).to_bytes(4, "little")
-            paths = "".join(os.path.abspath(f) + "\0" for f in files) + "\0"
-            put(CF_HDROP, header + paths.encode("utf-16-le"))
+            names = "".join(os.path.abspath(f) + "\0" for f in files) + "\0"
+            put(CF_HDROP, header + names.encode("utf-16-le"))
             put(user32.RegisterClipboardFormatW("Preferred DropEffect"), (1).to_bytes(4, "little"))  # copy
         put(CF_UNICODETEXT, text.encode("utf-16-le") + b"\x00\x00")
         return True
@@ -643,6 +728,8 @@ def focus_window(title):
 
 
 def bring_to_front(hwnd):
+    if paths.MAC:  # on a Mac this is the pid of the app that was in front
+        return mac.bring_to_front(hwnd)
     if not hwnd or not user32.IsWindow(hwnd):
         return False
     if user32.IsIconic(hwnd):
@@ -674,6 +761,8 @@ def cleanup_old():
 
 def windows_theme(key="AppsUseLightTheme"):
     """'light' or 'dark' from Windows' personalisation setting (apps, or the taskbar with SystemUsesLightTheme)."""
+    if paths.MAC:  # one Appearance setting covers apps and the menu bar
+        return mac.theme()
     import winreg
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
@@ -683,10 +772,14 @@ def windows_theme(key="AppsUseLightTheme"):
         return "dark"
 
 
+# WASAPI names are the full, readable ones on Windows; a Mac only has Core Audio.
+HOST_API = "Core Audio" if paths.MAC else "WASAPI"
+
+
 def input_devices():
-    """Microphones Windows has active (WASAPI names are the full, readable ones)."""
+    """Microphones the system has active."""
     try:
-        was = next(i for i, h in enumerate(sd.query_hostapis()) if "WASAPI" in h["name"])
+        was = next(i for i, h in enumerate(sd.query_hostapis()) if HOST_API in h["name"])
         return [d["name"] for d in sd.query_devices() if d["hostapi"] == was and d["max_input_channels"] > 0]
     except Exception:
         return []
@@ -695,12 +788,68 @@ def input_devices():
 def pick_input(name):
     """(device index or None for the default, device info) for a saved mic name."""
     if name:
-        was = next((i for i, h in enumerate(sd.query_hostapis()) if "WASAPI" in h["name"]), None)
+        was = next((i for i, h in enumerate(sd.query_hostapis()) if HOST_API in h["name"]), None)
         for i, d in enumerate(sd.query_devices()):
             if d["name"] == name and d["hostapi"] == was and d["max_input_channels"] > 0:
                 return i, d
         log("mic %r not found, using the Windows default" % name)
     return None, sd.query_devices(kind="input")
+
+
+class ChildInputStream:
+    """sd.InputStream with the stream in a child process (mic.py): on a Mac, stopping a PortAudio
+    stream can deadlock inside Core Audio, which froze Lookhere mid-stop. Same interface as the
+    parts of sd.InputStream used here; `callback(data)` gets float32 (frames, channels) blocks."""
+    BLOCK = 1024  # frames per callback
+
+    def __init__(self, device, samplerate, channels, callback):
+        self.channels, self.callback = channels, callback
+        self.proc = subprocess.Popen(paths.mic_cmd(["-" if device is None else str(device), str(samplerate),
+                                                    str(channels)]),
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=open(os.path.join(HERE, "mic.log"), "w"))
+        head = self.proc.stdout.readline().decode(errors="replace").strip()
+        if head != "OK":
+            self.proc.kill()
+            raise RuntimeError(head[4:] if head.startswith("ERR ") else "the microphone process failed")
+        self.reader = threading.Thread(target=self._read, daemon=True, name="mic")
+
+    def _read(self):
+        size = self.BLOCK * self.channels * 4
+        while True:
+            buf = self.proc.stdout.read(size)
+            if len(buf) < 4 * self.channels:
+                return
+            buf = buf[:len(buf) - len(buf) % (4 * self.channels)]
+            self.callback(np.frombuffer(buf, np.float32).reshape(-1, self.channels))
+
+    def start(self):
+        self.reader.start()
+
+    def stop(self):
+        try:
+            self.proc.stdin.close()  # mic.py exits without stopping its stream
+            self.proc.wait(timeout=2)
+        except Exception:
+            self.proc.kill()
+        self.reader.join(timeout=2)  # everything it sent is delivered
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
+
+
+def input_stream(device, samplerate, channels, callback):
+    """The mic stream: in-process on Windows, in mic.py on a Mac (see ChildInputStream)."""
+    if paths.MAC:
+        return ChildInputStream(device, samplerate, channels, callback)
+    return sd.InputStream(device=device, samplerate=samplerate, channels=channels, callback=callback)
 
 
 def level_of(data):
@@ -712,6 +861,8 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def autostart_enabled():
+    if paths.MAC:
+        return mac.autostart_enabled()
     import winreg
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
@@ -722,7 +873,12 @@ def autostart_enabled():
 
 
 def set_autostart(on):
-    """Start with Windows: the per-user Run key (the installer's checkbox writes the same value)."""
+    """Start with Windows: the per-user Run key (the installer's checkbox writes the same value).
+    On a Mac: open at login, a per-user LaunchAgent."""
+    if paths.MAC:
+        mac.set_autostart(on, shlex.split(paths.app_cmd()))
+        log("open at login: %s" % on)
+        return
     import winreg
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
         if on:
@@ -736,7 +892,10 @@ def set_autostart(on):
 
 
 def tray_image(state):
-    """The Lookhere logo, dot in the state colour, drawn at the exact tray icon size."""
+    """The Lookhere logo, dot in the state colour, drawn at the exact tray icon size.
+    On a Mac: the plain dot-and-bars shape, hollow while building (TrayIcon adds the red)."""
+    if paths.MAC:
+        return logo.menu_glyph(hollow=state == "busy")
     color = {"idle": logo.IDLE, "rec": logo.REC, "busy": logo.BUSY}[state]
     return logo.draw_logo(color, max(16, user32.GetSystemMetrics(49)))  # SM_CXSMICON
 
@@ -751,6 +910,19 @@ class TrayIcon(pystray.Icon):
     def __init__(self, *args, on_right=None, **kwargs):
         self.on_right = on_right
         super().__init__(*args, **kwargs)
+
+    if paths.MAC:
+        recording = False  # tint the menu bar icon red
+
+        def _assert_image(self):  # pystray's scales to 1x and has no template images
+            mac.set_menu_bar_image(self._status_item.button(), self._icon, tinted=self.recording)
+
+        def _update_menu(self):
+            pass  # no native menu: a click comes to __call__ and opens the styled one
+
+        def __call__(self):
+            f = self._status_item.button().window().frame()
+            self.on_right(f.origin.x, mac.screens()[0][3] - f.origin.y)
 
     def _on_notify(self, wparam, lparam):
         if lparam == 0x0205 and self.on_right:  # WM_RBUTTONUP
@@ -774,7 +946,7 @@ class Worker:
         p = subprocess.Popen(paths.worker_cmd(self.rec_dir, extra),
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=open(os.path.join(HERE, "process-last.log"), "w"),
-                             text=True, encoding="utf-8", errors="replace", creationflags=0x08000000)
+                             text=True, encoding="utf-8", errors="replace", creationflags=paths.NO_WINDOW)
         tie_to_app(p)
         threading.Thread(target=self._read, args=(p,), daemon=True).start()
         return p
@@ -810,6 +982,8 @@ class App:
 
         self.root = tk.Tk()
         self.root.withdraw()
+        if paths.MAC:
+            mac.menu_bar_app()
         # Errors in Tk callbacks would otherwise vanish (pythonw has no console).
         self.root.report_callback_exception = lambda *a: log("UI error: " + "".join(traceback.format_exception(*a)))
         self.hud = Hud(on_error=log)
@@ -846,15 +1020,15 @@ class App:
             pystray.MenuItem("Microphone", pystray.Menu(lambda: [
                 pystray.MenuItem(label, (lambda v: lambda *_: self.events.put(("mic", v)))(value),
                                  checked=(lambda v: lambda _: CONFIG["mic"] == v)(value), radio=True)
-                for label, value in [("Windows default", "")] + [(n, n) for n in input_devices()]
+                for label, value in [(MIC_DEFAULT, "")] + [(n, n) for n in input_devices()]
             ] + [pystray.Menu.SEPARATOR,
                  pystray.MenuItem("Test microphone", lambda *_: self.events.put(("mic", None)))])),
-            pystray.MenuItem("Start with Windows", lambda *_: self.events.put("toggle_autostart"),
+            pystray.MenuItem(AUTOSTART_TEXT[0], lambda *_: self.events.put("toggle_autostart"),
                              checked=lambda _: autostart_enabled()),
             pystray.MenuItem("Theme", pystray.Menu(*[
                 pystray.MenuItem(label, (lambda v: lambda *_: self.events.put(("theme", v)))(value),
                                  checked=(lambda v: lambda _: CONFIG["theme"] == v)(value), radio=True)
-                for label, value in (("Follow Windows light/dark mode", "auto"), ("Always dark", "dark"),
+                for label, value in ((THEME_AUTO if paths.MAC else "Follow Windows light/dark mode", "auto"), ("Always dark", "dark"),
                                      ("Always light", "light"))])),
             pystray.MenuItem("Open recordings folder", lambda *_: self.events.put("open_folder")),
             pystray.Menu.SEPARATOR,
@@ -865,7 +1039,11 @@ class App:
                              visible=lambda _: CONFIG["check_updates"]),
             pystray.MenuItem("Quit", lambda *_: self.events.put("quit")),
         ))
-        self.icon.run_detached()
+        if paths.MAC:  # AppKit ignores the icon being shown from pystray's setup thread
+            self.icon.run_detached(setup=lambda icon: None)
+            self.root.after(0, lambda: setattr(self.icon, "visible", True))
+        else:
+            self.icon.run_detached()
         self.root.after(100, self._pump)
         threading.Thread(target=self._warm_up, daemon=True).start()
         threading.Thread(target=self._update_loop, daemon=True).start()
@@ -873,7 +1051,7 @@ class App:
         taken = [self.label(k) for k, v in self.keys.items() if not v.ok]
         if taken:
             self.hud.show("error", "%s taken by another app" % " and ".join(taken),
-                          "Right-click the tray icon > Settings", hold=8)
+                          "%s > Settings" % MENU_HINT, hold=8)
 
     KEY_EVENTS = {"hotkey": "toggle", "pause_hotkey": "pause", "draw_hotkey": "draw"}
     KEY_TITLES = {"hotkey": "record", "pause_hotkey": "pause", "draw_hotkey": "draw"}
@@ -934,16 +1112,13 @@ class App:
                 self.ding()
             timer = "%d:%02d" % (s // 60, s % 60)
             if r.paused:
-                self.hud.show("paused", "Paused", "%s to resume \u00b7 %s to finish"
-                              % (self.label("pause_hotkey"), self.hotkey_label), right=timer)
+                self.hud.show("paused", "Paused", right=timer)
             elif r.drawing:
-                self.hud.show("draw", "Drawing on screen", "Drag to draw \u00b7 pencil or %s when done"
-                              % self.label("draw_hotkey"), right=timer)
+                self.hud.show("draw", "Drawing", right=timer)
             elif r.armed:
-                self.hud.show("recording", "Recording", "%s to finish \u00b7 Esc to cancel" % self.hotkey_label,
-                              right=timer)
+                self.hud.show("recording", "Recording", right=timer)
             else:
-                self.hud.show("arming", "Arming recording", "Starting the screen recorder · Esc to cancel")
+                self.hud.show("arming", "Starting")
 
     def _handle(self, ev):
         if ev == "toggle":
@@ -969,7 +1144,7 @@ class App:
             self.icon.update_menu()
             if self.state == "idle":
                 self.hud.show("done", "Lookhere %s is available" % ev[1]["version"],
-                              "Right-click the tray icon, then Update", hold=6)
+                              "%s, then Update" % MENU_HINT, hold=6)
         elif isinstance(ev, tuple) and ev[0] == "up_to_date":
             self.hud.show("done", "Lookhere is up to date", "Version %s" % paths.VERSION, hold=3)
         elif isinstance(ev, tuple) and ev[0] == "update_failed":
@@ -1005,7 +1180,7 @@ class App:
             save_setting("theme", ev[1])
             self._apply_themes()
             self.icon.update_menu()
-            self.hud.show("done", {"auto": "Following Windows light/dark mode", "dark": "Always dark",
+            self.hud.show("done", {"auto": "Following the system theme" if paths.MAC else "Following Windows light/dark mode", "dark": "Always dark",
                                    "light": "Always light"}[ev[1]],
                           "Press %s to record" % self.hotkey_label, hold=2.5)
             self.settings_changed()
@@ -1027,7 +1202,7 @@ class App:
             on = not autostart_enabled()
             set_autostart(on)
             self.icon.update_menu()
-            self.hud.show("done", "Starts with Windows" if on else "Won't start with Windows",
+            self.hud.show("done", AUTOSTART_TEXT[1] if on else AUTOSTART_TEXT[2],
                           "Change it any time in Settings", hold=2.5)
             self.settings_changed()
         elif isinstance(ev, tuple) and ev[0] == "change_hotkey":
@@ -1042,7 +1217,10 @@ class App:
             self.recopy()
         elif ev == "open_folder":
             os.makedirs(CONFIG["recordings_dir"], exist_ok=True)
-            os.startfile(CONFIG["recordings_dir"])
+            if paths.MAC:
+                subprocess.Popen(["open", CONFIG["recordings_dir"]])
+            else:
+                os.startfile(CONFIG["recordings_dir"])
         elif isinstance(ev, tuple) and ev[0] == "worker":
             self._worker_line(*ev[1:])
 
@@ -1051,20 +1229,26 @@ class App:
         self.recorder.ignore = self.on_pill
         self.recorder.start()
         self.hud.pen_button, self.hud.pen_on = True, False
-        self.pill_listener = mouse.Listener(on_click=self._pill_click)
-        self.pill_listener.start()
+        if paths.MAC:  # the pill's own window gets the click; no Accessibility needed
+            self.hud.on_click = lambda x, y: self._pill_click(x, y, None, True)
+        else:
+            self.pill_listener = mouse.Listener(on_click=self._pill_click)
+            self.pill_listener.start()
         self.dinged = False
         self.state = "recording"
         self._set_tray(REC)
         # Wherever you were when you pressed the hotkey (Claude, ChatGPT in a browser...) is
         # where the recording goes back to when it's ready.
-        self.return_hwnd = user32.GetForegroundWindow()
+        self.return_hwnd = mac.frontmost_pid() if paths.MAC else user32.GetForegroundWindow()
         rec_dir = self.recorder.dir
         self.worker = Worker(rec_dir, lambda line: self.events.put(("worker", rec_dir, line)))
-        self.esc_listener = keyboard.Listener(
-            on_press=lambda k: self.events.put("cancel") if k == keyboard.Key.esc else None)
-        self.esc_listener.start()
-        self.hud.show("arming", "Arming recording", "Starting the screen recorder · Esc to cancel")
+        if paths.MAC:  # Esc as a hotkey while recording (a key listener needs Accessibility)
+            self.esc_listener = mac.Hotkey("esc", lambda: self.events.put("cancel"))
+        else:
+            self.esc_listener = keyboard.Listener(
+                on_press=lambda k: self.events.put("cancel") if k == keyboard.Key.esc else None)
+            self.esc_listener.start()
+        self.hud.show("arming", "Starting")
 
     def _stop_esc(self):
         self.hud.pen_button = self.hud.pen_on = False
@@ -1113,19 +1297,22 @@ class App:
 
     def ding(self):
         path = os.path.join(paths.RES, "ding.wav")
-        if CONFIG["sounds"] and os.path.exists(path):
+        if CONFIG["sounds"] and os.path.exists(path) and paths.MAC:
+            subprocess.Popen(["afplay", path])
+        elif CONFIG["sounds"] and os.path.exists(path):
             winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
 
     def _warm_up(self):
         """Probe the video encoder now rather than on the first recording, and on a fresh install
         fetch the speech model (~460 MB) with the pill saying so."""
-        video_encoder()
+        if not paths.MAC:  # Macs record with ScreenCaptureKit, no encoder to pick
+            video_encoder()
         if models_cached():
             return
         self.hud.show("processing", "Getting Lookhere ready", "Downloading the speech model (one time, ~460 MB)",
                       progress=None)
         p = subprocess.run(paths.worker_cmd("-", ["--download"]), capture_output=True, text=True,
-                           creationflags=0x08000000)
+                           creationflags=paths.NO_WINDOW)
         if p.returncode == 0:
             self.hud.show("done", "Lookhere is ready", "Press %s to record" % self.hotkey_label, hold=4)
         else:
@@ -1148,8 +1335,8 @@ class App:
 
         def run():
             try:
-                with sd.InputStream(device=idx, samplerate=int(dev["default_samplerate"]),
-                                    channels=max(1, min(2, int(dev["max_input_channels"]))), callback=cb):
+                with input_stream(idx, int(dev["default_samplerate"]),
+                                  max(1, min(2, int(dev["max_input_channels"]))), cb):
                     time.sleep(seconds)
                 self.events.put(("mic_result", name, peak[0], None))
             except Exception as e:
@@ -1201,6 +1388,13 @@ class App:
         return "Ready \u00b7 %s to record" % self.hotkey_label
 
     def open_menu(self, x, y):
+        if paths.MAC:
+            import macmenu
+            if self.menu:  # a second click on the icon closes it
+                self.menu.close_all()
+                return
+            self.menu = macmenu.Menu(self.menu_items(), x, y, self._menu_closed, header=self.menu_status())
+            return
         import traymenu
         if self.menu:
             self.menu.close_all()
@@ -1230,13 +1424,14 @@ class App:
 
     def _set_tray(self, state):
         self.tray_state = state
+        self.icon.recording = state == REC
         self.icon.icon = tray_image(state)
 
     # ---------- changing the shortcut ----------
     def start_capture(self, note=None):
         k = self.capture_target
         self.hud.show("keys", "Press your new %s shortcut" % self.KEY_TITLES[k],
-                      note or "For example Ctrl+Alt+K \u00b7 Esc keeps %s" % self.label(k))
+                      note or "For example %s \u00b7 Esc keeps %s" % (hotkey_label("<ctrl>+<alt>+k"), self.label(k)))
         self.capture = ShortcutCapture(self.events.put)
 
     def _capture_event(self, kind, value):
@@ -1348,7 +1543,7 @@ class App:
     def copy_recording(self, rec_dir, title="Recording is on your clipboard"):
         with open(os.path.join(rec_dir, "message.txt"), encoding="utf-8") as f:
             set_clipboard(f.read(), [os.path.join(rec_dir, "preview.mp4")])
-        self.hud.show("done", title, "Paste it into any chat with Ctrl+V", hold=3)
+        self.hud.show("done", title, "Paste it into any chat with %s" % PASTE_KEYS, hold=3)
         log("copied %s" % rec_dir)
 
     def recopy(self):
@@ -1401,7 +1596,7 @@ class App:
             focused = focus_window(CONFIG["focus_window_title"])
         s = int(round(self.duration))
         self.hud.show("done", "Recording is on your clipboard",
-                      "Paste it into any chat with Ctrl+V · %d:%02d" % (s // 60, s % 60), hold=4.5)
+                      "Paste it into any chat with %s · %d:%02d" % (PASTE_KEYS, s // 60, s % 60), hold=4.5)
         log("bundle ready %s (returned to start window: %s)" % (rec_dir, focused))
 
     def run(self):
@@ -1418,12 +1613,12 @@ def selftest(seconds=5):
     build: Lookhere.exe --selftest. Writes selftest.json next to the logs; exit code 0 = pass."""
     out = {"version": paths.VERSION, "frozen": paths.FROZEN, "data_dir": paths.DATA}
     T = time.monotonic()
+    r = Recorder()
     try:
-        r = Recorder()
         r.start()
         w = subprocess.Popen(paths.worker_cmd(r.dir, ["--wait"]), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=open(os.path.join(HERE, "selftest-worker.log"), "w"), text=True,
-                             encoding="utf-8", errors="replace", creationflags=0x08000000)
+                             encoding="utf-8", errors="replace", creationflags=paths.NO_WINDOW)
         time.sleep(seconds)
         r.stop()
         t_stop = time.monotonic()
@@ -1434,7 +1629,7 @@ def selftest(seconds=5):
         files = {n: os.path.getsize(os.path.join(r.dir, n)) for n in os.listdir(r.dir)
                  if os.path.isfile(os.path.join(r.dir, n))}
         out.update({
-            "encoder": _ENCODER, "video_live": bool(meta.get("video")), "frames": len(meta["frames"]),
+            "encoder": "ScreenCaptureKit" if paths.MAC else _ENCODER, "video_live": bool(meta.get("video")), "frames": len(meta["frames"]),
             "build_seconds": round(time.monotonic() - t_stop, 1), "worker_exit": w.returncode,
             "worker_last_lines": lines[-3:], "files": files,
             "transcription": next((l for l in open(os.path.join(r.dir, "recording.md"), encoding="utf-8")
@@ -1446,6 +1641,10 @@ def selftest(seconds=5):
     except Exception:
         out["ok"] = False
         out["error"] = traceback.format_exc()
+        if getattr(r, "video", None) and not r.video.ended():
+            r.video.stop()  # don't leave the screen recorder running
+        if getattr(r, "dir", None):
+            shutil.rmtree(r.dir, ignore_errors=True)
     out["total_seconds"] = round(time.monotonic() - T, 1)
     text = json.dumps(out, indent=1)
     with open(os.path.join(HERE, "selftest.json"), "w", encoding="utf-8") as f:
@@ -1460,14 +1659,28 @@ def main():
         sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--worker"]
         process.main()
         return
+    if "--mic" in sys.argv:  # packaged Mac app: the microphone process (mic.py)
+        import mic
+        sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--mic"]
+        mic.main()
+        return
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     if sys.stderr is None:  # pythonw: keep library warnings and crashes somewhere readable
         sys.stderr = sys.stdout = open(os.path.join(HERE, "screen-explain.err.log"), "a", encoding="utf-8")
-    mutex = kernel32.CreateMutexW(None, False, "Local\\screen-explain-single-instance")
-    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-        print("Lookhere is already running")
-        return
+    if paths.MAC:
+        import fcntl
+        mutex = open(os.path.join(HERE, ".lookhere.lock"), "w")
+        try:
+            fcntl.flock(mutex, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("Lookhere is already running")
+            return
+    else:
+        mutex = kernel32.CreateMutexW(None, False, "Local\\screen-explain-single-instance")
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            print("Lookhere is already running")
+            return
     cleanup_old()
     App().run()
     del mutex

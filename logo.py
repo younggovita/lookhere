@@ -57,6 +57,25 @@ def draw_logo(dot=REC, size=64):
     return img.resize((size, size), Image.LANCZOS)
 
 
+def menu_glyph(hollow=False, size=44):
+    """The Mac menu bar icon: the dot and mic bars alone, as a black shape for a template image
+    (no tile, macOS colours it). `hollow` = building. Drawn large and scaled down, for clean edges."""
+    S = 8
+    u = size * S / 44.0
+    mask = Image.new("L", (size * S, size * S), 0)
+    d = ImageDraw.Draw(mask)
+    cx, cy, r = 14 * u, 22 * u, 12 * u
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+    if hollow:
+        k = r - 4 * u
+        d.ellipse((cx - k, cy - k, cx + k, cy + k), fill=0)
+    for x, h in ((32, 18), (39.5, 32)):
+        d.rounded_rectangle(((x - 2.75) * u, cy - h / 2 * u, (x + 2.75) * u, cy + h / 2 * u), radius=2.75 * u, fill=255)
+    img = Image.new("RGBA", mask.size, (0, 0, 0, 0))
+    img.putalpha(mask)
+    return img.resize((size, size), Image.LANCZOS)
+
+
 def save_ico(path, dot=REC):
     sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
     draw_logo(dot, 256).save(path, sizes=[(s, s) for s in sizes])

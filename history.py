@@ -19,6 +19,9 @@ from PIL import Image, ImageDraw, ImageTk
 import hud
 import paths
 
+if paths.MAC:
+    import mac
+
 _win = None
 
 
@@ -28,7 +31,7 @@ def hexc(rgb):
 
 def duration_of(path):
     """Seconds of a video, read from ffmpeg's header line (ffprobe isn't bundled)."""
-    r = subprocess.run([paths.ffmpeg_exe(), "-i", path], capture_output=True, text=True, creationflags=0x08000000)
+    r = subprocess.run([paths.ffmpeg_exe(), "-i", path], capture_output=True, text=True, creationflags=paths.NO_WINDOW)
     m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", r.stderr)
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
 
@@ -36,7 +39,7 @@ def duration_of(path):
 def frame_at(path, t, width=640):
     r = subprocess.run([paths.ffmpeg_exe(), "-v", "error", "-ss", "%.2f" % max(0, t), "-i", path, "-frames:v", "1",
                         "-vf", "scale=%d:-2" % width, "-f", "image2pipe", "-vcodec", "png", "-"],
-                       capture_output=True, creationflags=0x08000000)
+                       capture_output=True, creationflags=paths.NO_WINDOW)
     from io import BytesIO
     return Image.open(BytesIO(r.stdout)).convert("RGB") if r.stdout else Image.new("RGB", (width, width * 9 // 16))
 
@@ -46,8 +49,24 @@ def fmt(t):
     return "%d:%02d" % (t // 60, t % 60)
 
 
+def tkfont(size, bold=False):
+    """A Tk font: Segoe UI on Windows; on a Mac the system font (Tk's points are smaller there)."""
+    if paths.MAC:
+        return (".AppleSystemUIFont", round(size * 1.33), "bold") if bold else (".AppleSystemUIFont", round(size * 1.33))
+    return ("Segoe UI Semibold", size) if bold else ("Segoe UI", size)
+
+
+def open_path(path):
+    if paths.MAC:
+        mac.open_path(path)
+    else:
+        os.startfile(path)
+
+
 def recycle(path):
     """Send a folder to the Recycle Bin (recoverable), not a permanent delete."""
+    if paths.MAC:
+        return mac.recycle(path)
     class SHFILEOPSTRUCTW(ctypes.Structure):
         _fields_ = [("hwnd", wt.HWND), ("wFunc", wt.UINT), ("pFrom", wt.LPCWSTR), ("pTo", wt.LPCWSTR),
                     ("fFlags", ctypes.c_uint16), ("fAnyOperationsAborted", wt.BOOL),
@@ -104,6 +123,8 @@ def when_label(dt):
 def open_window(app):
     """Open (or raise) the History window. Runs on the app's Tk thread."""
     global _win
+    if paths.MAC:
+        mac.activate()
     if _win is not None and _win.top.winfo_exists():
         _win.refresh()
         _win.top.deiconify()
@@ -190,6 +211,8 @@ class Pill(tk.Label):
 
 
 def dark_title_bar(top, dark):
+    if paths.MAC:
+        return mac.set_appearance(dark)
     try:
         hwnd = ctypes.windll.user32.GetParent(top.winfo_id()) or top.winfo_id()
         val = ctypes.c_int(1 if dark else 0)
@@ -223,10 +246,10 @@ class HistoryWindow:
         self._logo = ImageTk.PhotoImage(logo.draw_logo(logo.IDLE, 34))
         tk.Label(head, image=self._logo, bg=hexc(p["bg"])).pack(side="left", padx=(0, 12))
         tk.Label(head, text="Recordings", bg=hexc(p["bg"]), fg=hexc(p["text"]),
-                 font=("Segoe UI Semibold", 18)).pack(side="left")
-        self.count = tk.Label(head, text="", bg=hexc(p["bg"]), fg=hexc(p["muted"]), font=("Segoe UI", 10))
+                 font=tkfont(18, True)).pack(side="left")
+        self.count = tk.Label(head, text="", bg=hexc(p["bg"]), fg=hexc(p["muted"]), font=tkfont(10))
         self.count.pack(side="left", padx=12, pady=(8, 0))
-        Pill(head, "Open folder", lambda: os.startfile(app_root(app)), p, p["bg"]).pack(side="right")
+        Pill(head, "Open folder", lambda: open_path(app_root(app)), p, p["bg"]).pack(side="right")
 
         self.canvas = tk.Canvas(self.top, bg=hexc(p["bg"]), highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True, padx=(24, 14), pady=(0, 18))
@@ -278,9 +301,9 @@ class HistoryWindow:
         self.images.append(img)
         tk.Label(box, image=img, bg=hexc(p["bg"])).pack()
         tk.Label(box, text="No recordings yet", bg=hexc(p["bg"]), fg=hexc(p["text"]),
-                 font=("Segoe UI Semibold", 14)).pack(pady=(16, 4))
+                 font=tkfont(14, True)).pack(pady=(16, 4))
         tk.Label(box, text="Press %s to record. They'll show up here." % self.app.hotkey_label,
-                 bg=hexc(p["bg"]), fg=hexc(p["muted"]), font=("Segoe UI", 10)).pack()
+                 bg=hexc(p["bg"]), fg=hexc(p["muted"]), font=tkfont(10)).pack()
 
     def _card(self, r):
         p = self.p
@@ -295,10 +318,10 @@ class HistoryWindow:
         trimmed = os.path.exists(os.path.join(r["dir"], "edits.json"))
 
         btns = tk.Frame(card, bg=hexc(p["card"]))
-        Pill(btns, "Play", lambda: os.startfile(video), p, p["card"], "lime", icon="play").pack(side="left")
+        Pill(btns, "Play", lambda: open_path(video), p, p["card"], "lime", icon="play").pack(side="left")
         Pill(btns, "Copy", lambda: self.app.copy_recording(r["dir"]), p, p["card"]).pack(side="left", padx=6)
         Pill(btns, "Trim", lambda: TrimWindow(self, r["dir"]), p, p["card"]).pack(side="left")
-        Pill(btns, "Folder", lambda: os.startfile(r["dir"]), p, p["card"]).pack(side="left", padx=6)
+        Pill(btns, "Folder", lambda: open_path(r["dir"]), p, p["card"]).pack(side="left", padx=6)
         delete = Pill(btns, "Delete", None, p, p["card"], "danger")
         delete.command = lambda: self._delete(r, delete)
         delete.pack(side="left")
@@ -311,14 +334,14 @@ class HistoryWindow:
             card.create_image(0, 0, image=bg, anchor="nw")
             card.create_image(16, (H - 99) // 2, image=thumb, anchor="nw")
             card.tag_bind(card.create_rectangle(16, (H - 99) // 2, 192, (H - 99) // 2 + 99, outline="", width=0),
-                          "<Button-1>", lambda e: os.startfile(video))
+                          "<Button-1>", lambda e: open_path(video))
             x = 210
             card.create_text(x, 22, text=when_label(r["when"]), anchor="nw", fill=hexc(p["text"]),
-                             font=("Segoe UI Semibold", 12))
+                             font=tkfont(12, True))
             meta = fmt(length) + ("  ·  trimmed" if trimmed else "")
-            card.create_text(W - 20, 24, text=meta, anchor="ne", fill=hexc(p["muted"]), font=("Segoe UI", 10))
+            card.create_text(W - 20, 24, text=meta, anchor="ne", fill=hexc(p["muted"]), font=tkfont(10))
             card.create_text(x, 48, text=r["said"] or "Nothing said", anchor="nw", width=W - x - 24,
-                             fill=hexc(p["muted"]), font=("Segoe UI", 10))
+                             fill=hexc(p["muted"]), font=tkfont(10))
             card.create_window(x, H - 18, window=btns, anchor="sw")
         card.bind("<<Redraw>>", draw)
         draw()
@@ -375,7 +398,7 @@ class TrimWindow:
         self.bar.bind("<B1-Motion>", self._drag)
         self._dragging = "Start"
         self._draw_bar()
-        self.span = tk.Label(self.top, text="", bg=bgc, fg=hexc(p["muted"]), font=("Segoe UI", 10))
+        self.span = tk.Label(self.top, text="", bg=bgc, fg=hexc(p["muted"]), font=tkfont(10))
         self.span.pack(pady=(8, 0))
         btns = tk.Frame(self.top, bg=bgc)
         btns.pack(pady=16)
@@ -383,7 +406,7 @@ class TrimWindow:
         if self.edits.get("trim"):
             Pill(btns, "Undo trim", self._reset, p, p["bg"]).pack(side="left", padx=8)
         Pill(btns, "Cancel", self.top.destroy, p, p["bg"]).pack(side="left", padx=8)
-        self.status = tk.Label(self.top, text="", bg=bgc, fg=hexc(p["muted"]), font=("Segoe UI", 9))
+        self.status = tk.Label(self.top, text="", bg=bgc, fg=hexc(p["muted"]), font=tkfont(9))
         self.status.pack(pady=(0, 12))
         self._pending = None
         self._show(0.0)
@@ -499,7 +522,7 @@ class TrimWindow:
 
         def work():
             p = subprocess.run(paths.worker_cmd(self.dir), capture_output=True, text=True,
-                               creationflags=0x08000000)
+                               creationflags=paths.NO_WINDOW)
             app.events.put(("trimmed", self.dir, p.returncode == 0))
         threading.Thread(target=work, daemon=True).start()
         self.top.after(300, self.top.destroy)

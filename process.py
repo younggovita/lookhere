@@ -254,7 +254,7 @@ def build_preview_video(rec, meta, audio, out_path, size=(1280, 720)):
             cmd += ["-i", voice, "-c:a", "aac", "-b:a", "64k"]
         cmd += ["-r", "10", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart", "-t", "%.2f" % meta["duration"], out_path]
-        r = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
+        r = subprocess.run(cmd, capture_output=True, text=True, creationflags=paths.NO_WINDOW)
         if r.returncode != 0:
             print("preview video failed: %s" % r.stderr[-1000:], file=sys.stderr)
             return False
@@ -265,7 +265,7 @@ def video_frame(exe, path, t, size=(96, 54)):
     """Grey thumbnail of one video frame at t seconds, for matching outputs to monitors."""
     r = subprocess.run([exe, "-v", "error", "-ss", "%.2f" % max(0.0, t), "-i", path, "-frames:v", "1",
                         "-vf", "scale=%d:%d,format=gray" % size, "-f", "rawvideo", "-"],
-                       capture_output=True, creationflags=0x08000000)
+                       capture_output=True, creationflags=paths.NO_WINDOW)
     if len(r.stdout) != size[0] * size[1]:
         return None
     return np.frombuffer(r.stdout, np.uint8).reshape(size[1], size[0]).astype(np.float32)
@@ -324,6 +324,12 @@ def monitor_segments(meta, start, end, hold=0.7):
     return [(max(a, start), min(b, end), m) for a, b, m in segs if min(b, end) - max(a, start) > 0.05]
 
 
+# GPU decode and encode for the preview: NVIDIA on Windows, the Apple media engine on a Mac.
+HWACCEL = "videotoolbox" if paths.MAC else "cuda"
+HW_CODEC = (["-c:v", "h264_videotoolbox", "-q:v", "60"] if paths.MAC
+            else ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "26"])
+
+
 def build_full_preview(rec, meta, audio, out_path, size=(1920, 1080), kept=None):
     """Real screen video with the cursor, following whichever monitor the cursor is on, plus his voice."""
     exe = ffmpeg_exe()
@@ -345,7 +351,7 @@ def build_full_preview(rec, meta, audio, out_path, size=(1920, 1080), kept=None)
         w, h = size
         for i, (a, b, mon) in enumerate(segs):
             # One seeked input per segment: only the part that is shown gets decoded (on the GPU).
-            cmd += ["-hwaccel", "cuda", "-ss", "%.3f" % (a - v["offset"]), "-t", "%.3f" % (b - a),
+            cmd += ["-hwaccel", HWACCEL, "-ss", "%.3f" % (a - v["offset"]), "-t", "%.3f" % (b - a),
                     "-i", os.path.join(rec, v["files"][mapping.get(mon, 0)])]
             pad = ",tpad=start_duration=%.3f:start_mode=clone" % lead if i == 0 and lead > 0.05 else ""
             parts.append("[%d:v]setpts=PTS-STARTPTS,fps=30,"
@@ -363,14 +369,15 @@ def build_full_preview(rec, meta, audio, out_path, size=(1920, 1080), kept=None)
         script = os.path.join(tmp, "graph.txt")
         with open(script, "w", encoding="utf-8") as fh:
             fh.write(graph)
-        cmd += ["-filter_complex_script", script] + maps
-        no_hw = [x for x in cmd if x not in ("-hwaccel", "cuda")]
-        for base, codec in ((cmd, ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "26"]),
-                            (no_hw, ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "26"]),
+        # ffmpeg 7+ reads an option from a file with "-/option"; 8 dropped -filter_complex_script
+        # (Homebrew's on a Mac is current; the Windows build bundles an older one)
+        cmd += ["-/filter_complex" if paths.MAC else "-filter_complex_script", script] + maps
+        no_hw = [x for x in cmd if x not in ("-hwaccel", HWACCEL)]
+        for base, codec in ((cmd, HW_CODEC), (no_hw, HW_CODEC),
                             (no_hw, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"])):
             r = subprocess.run(base + codec + ["-pix_fmt", "yuv420p", "-movflags", "+faststart",
                                                "-t", "%.2f" % sum(b - a for a, b in kept), out_path],
-                               capture_output=True, text=True, creationflags=0x08000000)
+                               capture_output=True, text=True, creationflags=paths.NO_WINDOW)
             if r.returncode == 0:
                 return True
             print("full preview with %s failed: %s" % (codec[1], r.stderr[-1500:]), file=sys.stderr)

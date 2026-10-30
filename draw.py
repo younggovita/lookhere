@@ -20,16 +20,20 @@ from pynput import mouse
 
 import hud
 
-user32 = hud.user32
-gdi32 = hud.gdi32
-kernel32 = ctypes.WinDLL("kernel32")
-kernel32.GetModuleHandleW.restype = wt.HMODULE
-kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
-hud._proto(gdi32.CreateBitmap, wt.HBITMAP, ctypes.c_int, ctypes.c_int, wt.UINT, wt.UINT, ctypes.c_void_p)
-hud._proto(user32.CreateIconIndirect, wt.HICON, ctypes.c_void_p)
-hud._proto(user32.RegisterClassW, wt.ATOM, ctypes.c_void_p)
-hud._proto(user32.GetSystemMetrics, ctypes.c_int, ctypes.c_int)
-hud._proto(user32.SetCursor, wt.HANDLE, wt.HANDLE)
+MAC = hud.MAC
+if MAC:
+    import mac
+else:
+    user32 = hud.user32
+    gdi32 = hud.gdi32
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetModuleHandleW.restype = wt.HMODULE
+    kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+    hud._proto(gdi32.CreateBitmap, wt.HBITMAP, ctypes.c_int, ctypes.c_int, wt.UINT, wt.UINT, ctypes.c_void_p)
+    hud._proto(user32.CreateIconIndirect, wt.HICON, ctypes.c_void_p)
+    hud._proto(user32.RegisterClassW, wt.ATOM, ctypes.c_void_p)
+    hud._proto(user32.GetSystemMetrics, ctypes.c_int, ctypes.c_int)
+    hud._proto(user32.SetCursor, wt.HANDLE, wt.HANDLE)
 SHOW_FOR, FADE = 3.0, 0.6   # seconds a finished stroke stays, then fades
 WIDTH = 7                   # stroke width in px
 FPS = 60
@@ -39,9 +43,11 @@ SS = 2                      # strokes are drawn at 2x and scaled down: smooth, a
 
 def smooth(points, passes=2):
     """Steady the line like a drawing app: average out hand tremor (moving average over ~5 mouse
-    points), drop near-duplicates, then round off the corners (Chaikin), keeping both ends."""
+    points, 3 on a Mac), drop near-duplicates, then round off the corners (Chaikin), keeping both
+    ends. A Mac's drag events are sparser than Windows' raw mouse points, so the same averaging
+    spans more of the line there and rounds real corners into loops."""
     if len(points) > 4:
-        k = 2
+        k = 1 if MAC else 2
         avg = []
         for i in range(len(points)):
             win = points[max(0, i - k):i + k + 1]
@@ -136,6 +142,15 @@ def make_pencil_cursor():
 
 _CLASS = None
 _CURSOR = None
+_MAC_CURSOR = None
+
+
+def mac_pencil_cursor():
+    """The pencil as an NSCursor (32pt, drawn at 64px), hotspot at the tip."""
+    global _MAC_CURSOR
+    if _MAC_CURSOR is None:
+        _MAC_CURSOR = mac.cursor_from(pencil_image(64), (2, 30))
+    return _MAC_CURSOR
 
 
 def ink_class():
@@ -154,9 +169,10 @@ def ink_class():
 
 EX_BASE = 0x00080000 | 0x08000000 | 0x80 | 0x8  # LAYERED | NOACTIVATE | TOOLWINDOW | TOPMOST
 EX_CLICK_THROUGH = 0x00000020                    # TRANSPARENT
-user32.SetWindowLongW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_long]
-user32.GetWindowLongW.argtypes = [wt.HWND, ctypes.c_int]
-user32.GetWindowLongW.restype = ctypes.c_long
+if not MAC:
+    user32.SetWindowLongW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_long]
+    user32.GetWindowLongW.argtypes = [wt.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
 
 
 def monitors():
@@ -166,13 +182,26 @@ def monitors():
 
 
 class _Screen:
-    def __init__(self, mon):
+    def __init__(self, mon, on_mouse=None):
         self.mon = mon
+        self.shown = False
+        self.dirty = True
+        if MAC:  # an NSPanel of vector strokes (see DrawLayer._frame_mac)
+            self.win = mac.Overlay(mac.overlay_level(), on_mouse=on_mouse)
+            self.win.cursor = mac_pencil_cursor()
+            return
         self.hwnd = user32.CreateWindowExW(EX_BASE | EX_CLICK_THROUGH, ink_class(), "Lookhere drawing", 0x80000000,
                                            mon["left"], mon["top"], 1, 1, None, None, None, None)
         self.surface = hud._Surface()
         self.shown = False
         self.dirty = True
+
+    def show(self, on):
+        if MAC:
+            if not on:
+                self.win.hide()  # showing happens with the first strokes
+        else:
+            user32.ShowWindow(self.hwnd, 4 if on else 0)  # SW_SHOWNOACTIVATE / SW_HIDE
 
     def contains(self, x, y):
         m = self.mon
@@ -202,7 +231,7 @@ class DrawLayer:
             if not on and self.current:
                 self.current["done"] = time.monotonic()
                 self.current = None
-        if on and not self.listener:
+        if on and not self.listener and not MAC:  # a Mac's ink windows get the mouse themselves
             self.listener = mouse.Listener(on_click=self._click, on_move=self._move)
             self.listener.start()
         elif not on and self.listener:
@@ -226,6 +255,13 @@ class DrawLayer:
                 self.current = None
                 threading.Timer(0.12, self.on_stroke).start()  # after the stroke is on screen
 
+    def _mouse(self, kind, x, y):
+        """Mac: presses and drags on the ink windows (instead of a global mouse listener)."""
+        if kind == "drag":
+            self._move(x, y)
+        elif kind in ("down", "up"):
+            self._click(x, y, mouse.Button.left, kind == "down")
+
     def _move(self, x, y):
         with self.lock:
             if self.current:
@@ -236,7 +272,7 @@ class DrawLayer:
     # ---------- window thread ----------
     def _thread(self, ready):
         try:
-            self.screens = [_Screen(m) for m in monitors()]
+            self.screens = [_Screen(m, self._mouse) for m in monitors()]
         except Exception:
             self.on_error("draw layer failed:\n" + traceback.format_exc())
             self.screens = []
@@ -246,7 +282,7 @@ class DrawLayer:
         frame = 1 / FPS
         next_t = time.perf_counter()
         while not self.closed:
-            while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+            while not MAC and user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
             try:
@@ -263,7 +299,7 @@ class DrawLayer:
             else:
                 next_t = time.perf_counter()
         for s in self.screens:
-            user32.ShowWindow(s.hwnd, 0)
+            s.show(False)
 
     # Each stroke is one continuous brush trail (see Ink): settled parts of the line are stamped
     # into the stroke's own high-res mask once; each frame only the area around the live tip is
@@ -289,7 +325,41 @@ class DrawLayer:
             ink.finish()
         return dirty
 
+    def _frame_mac(self):
+        """A Mac draws each stroke as a vector path (CAShapeLayer), so edges are properly
+        anti-aliased at any resolution; the pixel ink below can't get there."""
+        now = time.monotonic()
+        with self.lock:
+            self.strokes = [s for s in self.strokes
+                            if s["done"] is None or now - s["done"] < SHOW_FOR + FADE]
+            strokes = list(self.strokes)
+            pts_now = {id(s): list(s["points"]) for s in strokes}
+            active = self.active
+            mode_changed, self.mode_changed = self.mode_changed, False
+        out = []
+        for st in strokes:
+            pts = pts_now[id(st)]
+            if st.get("n") != (len(pts), st["done"] is None):  # re-smooth only what changed
+                st["n"] = (len(pts), st["done"] is None)
+                st["path"] = smooth(pts) if len(pts) > 1 else [pts[0], pts[0]]
+            out.append((id(st), st["n"], st["path"], self._alpha(st["done"], now)))
+        for scr in self.screens:
+            m = scr.mon
+            mine = [o for o in out if any(_overlaps((x, y, x + 1, y + 1), m) for x, y in o[2][::8] + o[2][-1:])]
+            if mode_changed:
+                scr.win.click_through(not active)  # also shows the pencil cursor while drawing
+            if active or mine:
+                scr.win.show_strokes((m["left"], m["top"], m["width"], m["height"]), mine, active, STYLE,
+                                     hud.ACCENT[:3], WIDTH)
+                scr.shown = True
+            elif scr.shown:
+                scr.show(False)
+                scr.shown = False
+        return bool(strokes) or active
+
     def _frame(self):
+        if MAC:
+            return self._frame_mac()
         now = time.monotonic()
         with self.lock:
             gone = [s for s in self.strokes if s["done"] is not None and now - s["done"] >= SHOW_FOR + FADE]
@@ -312,7 +382,7 @@ class DrawLayer:
             mine = [st for st in strokes if _overlaps(self._box(st), scr.mon)]
             if not active and not mine and not any(_overlaps(b, scr.mon) for b in dirty):
                 if scr.shown:
-                    user32.ShowWindow(scr.hwnd, 0)
+                    scr.show(False)
                     scr.shown = False
                 continue
             if mode_changed:
@@ -323,7 +393,7 @@ class DrawLayer:
             if boxes or mode_changed or not scr.shown:
                 self._paint(scr, mine, active, now, boxes, full=mode_changed or not scr.shown)
             if not scr.shown:
-                user32.ShowWindow(scr.hwnd, 4)  # SW_SHOWNOACTIVATE
+                scr.show(True)
                 scr.shown = True
         return bool(strokes) or active
 

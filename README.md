@@ -107,3 +107,29 @@ frame picking, transcription and markdown. Windows-specific pieces and their Mac
 | clipboard file (`CF_HDROP`) | `set_clipboard` | `NSPasteboard` file URL |
 | Run key, window focus, theme from registry | `screen_explain.py` | LaunchAgent / SMAppService, `NSRunningApplication`, `AppleInterfaceStyle` |
 | Inno Setup installer | `installer.iss` | `.app` via PyInstaller/py2app, signed and notarised (Apple Developer ID) |
+
+Mac port status (branch `mac-port`, started 2026-10-30 on an M1):
+- **Done:** `paths.py` (Mac data folder, `venv/bin/python`, Homebrew ffmpeg); screen video on
+  ScreenCaptureKit (`MacScreenVideo` / `mac.ScreenRecording`, one `screenN.mp4` per display: ffmpeg's
+  `avfoundation` input records windows that are hidden from capture, ScreenCaptureKit leaves them out);
+  `process.py` preview on VideoToolbox; `mac.py` (cursor, front window title, `NSPasteboard`
+  clipboard, refocus, `AppleInterfaceStyle`, `Overlay` window); Core Audio mics; `afplay` ding;
+  lock-file single instance; the pill (`hud.py`) and drawing layer (`draw.py`) as `NSPanel`s via
+  `mac.Overlay`, 60 fps, SF Pro, the pill hidden from capture, strokes as vector `CAShapeLayer`s; global hotkeys via Carbon
+  `RegisterEventHotKey` (`mac.Hotkey`: exclusive like `RegisterHotKey`, no Accessibility needed;
+  Ctrl+Option+H/P/M); pystray menu bar icon (a template image, red while recording, hollow dot while building) with the native menu; Open at login (a LaunchAgent).
+  The pill's buttons and the ink take clicks through their own windows, and Esc is a hotkey
+  while recording, so recording, pausing, drawing and cancelling need no Accessibility.
+  The mic runs in its own process (`mic.py`): stopping PortAudio in-process can deadlock in
+  Core Audio on a Mac. The app runs (`venv/bin/python screen_explain.py`) and `--selftest` passes.
+  The styled menu (`macmenu.py`, drawn like the pill, never takes focus), Settings with shortcut
+  rebinding, and History run on a Mac. The mic process ends by itself if the app dies.
+- **Next:** stopping the worker if the app crashes, Trim checked on a Mac, `.app` build.
+  What the Mac work means for Windows: `MAC-TO-WINDOWS.md`. Smaller: `.mp4` doesn't survive
+  a hard stop the way `.mkv` did. The pencil cursor relies on a private window-server property
+  (`SetsCursorInBackground`), since macOS only lets the front app change the cursor.
+- Needs Screen Recording and Microphone permission for whatever launches it (Terminal, Claude...),
+  plus Accessibility to log your clicks in the recording (pynput); everything else works without it.
+- Mac setup: `python3 -m venv venv && venv/bin/pip install mss numpy pystray sounddevice soundfile
+  pillow pynput faster-whisper pyobjc-framework-Cocoa pyobjc-framework-Quartz
+  pyobjc-framework-ScreenCaptureKit`, `brew install ffmpeg`. macOS 15 or later.

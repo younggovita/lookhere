@@ -11,6 +11,7 @@ import ctypes
 import ctypes.wintypes as wt
 import math
 import os
+import sys
 import threading
 import time
 import traceback
@@ -18,13 +19,17 @@ import traceback
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-# Private DLL handles with full prototypes: handles (HDC, HMONITOR...) can be 64-bit values that
-# overflow ctypes' default int conversion, and pystray/pynput use ctypes.windll with their own.
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-gdi32 = ctypes.WinDLL("gdi32")
-shcore = ctypes.WinDLL("shcore")
-dwmapi = ctypes.WinDLL("dwmapi")
-winmm = ctypes.WinDLL("winmm")
+MAC = sys.platform == "darwin"
+if MAC:
+    import mac
+else:
+    # Private DLL handles with full prototypes: handles (HDC, HMONITOR...) can be 64-bit values that
+    # overflow ctypes' default int conversion, and pystray/pynput use ctypes.windll with their own.
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32")
+    shcore = ctypes.WinDLL("shcore")
+    dwmapi = ctypes.WinDLL("dwmapi")
+    winmm = ctypes.WinDLL("winmm")
 
 FONTS = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
 SS = 2  # supersampling for smooth edges
@@ -89,37 +94,40 @@ def _proto(fn, restype, *argtypes):
     fn.restype, fn.argtypes = restype, list(argtypes)
 
 
-_proto(user32.CreateWindowExW, wt.HWND, wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
-       ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID)
-_proto(user32.ShowWindow, wt.BOOL, wt.HWND, ctypes.c_int)
-_proto(user32.SetWindowDisplayAffinity, wt.BOOL, wt.HWND, wt.DWORD)
-_proto(user32.GetDC, wt.HDC, wt.HWND)
-_proto(user32.ReleaseDC, ctypes.c_int, wt.HWND, wt.HDC)
-_proto(user32.GetCursorPos, wt.BOOL, ctypes.POINTER(wt.POINT))
-_proto(user32.MonitorFromPoint, wt.HMONITOR, wt.POINT, wt.DWORD)
-_proto(user32.GetMonitorInfoW, wt.BOOL, wt.HMONITOR, ctypes.POINTER(MONITORINFO))
-_proto(user32.UpdateLayeredWindow, wt.BOOL, wt.HWND, wt.HDC, ctypes.POINTER(wt.POINT), ctypes.POINTER(wt.SIZE),
-       wt.HDC, ctypes.POINTER(wt.POINT), wt.DWORD, ctypes.POINTER(BLENDFUNCTION), wt.DWORD)
-_proto(user32.PeekMessageW, wt.BOOL, ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT, wt.UINT)
-_proto(user32.TranslateMessage, wt.BOOL, ctypes.POINTER(wt.MSG))
-_proto(user32.DispatchMessageW, ctypes.c_ssize_t, ctypes.POINTER(wt.MSG))
-_proto(gdi32.CreateCompatibleDC, wt.HDC, wt.HDC)
-_proto(gdi32.CreateDIBSection, wt.HBITMAP, wt.HDC, ctypes.c_void_p, wt.UINT, ctypes.POINTER(ctypes.c_void_p),
-       wt.HANDLE, wt.DWORD)
-_proto(gdi32.SelectObject, wt.HGDIOBJ, wt.HDC, wt.HGDIOBJ)
-_proto(gdi32.DeleteObject, wt.BOOL, wt.HGDIOBJ)
-_proto(gdi32.DeleteDC, wt.BOOL, wt.HDC)
-_proto(gdi32.GetDeviceCaps, ctypes.c_int, wt.HDC, ctypes.c_int)
-_proto(shcore.GetDpiForMonitor, ctypes.c_long, wt.HMONITOR, ctypes.c_int, ctypes.POINTER(wt.UINT),
-       ctypes.POINTER(wt.UINT))
-_proto(dwmapi.DwmFlush, ctypes.c_long)
-_proto(user32.GetWindowLongW, ctypes.c_long, wt.HWND, ctypes.c_int)
-_proto(user32.SetWindowLongW, ctypes.c_long, wt.HWND, ctypes.c_int, ctypes.c_long)
-_proto(user32.SetWindowPos, wt.BOOL, wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT)
-_proto(winmm.timeBeginPeriod, wt.UINT, wt.UINT)
+if not MAC:
+    _proto(user32.CreateWindowExW, wt.HWND, wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
+           ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID)
+    _proto(user32.ShowWindow, wt.BOOL, wt.HWND, ctypes.c_int)
+    _proto(user32.SetWindowDisplayAffinity, wt.BOOL, wt.HWND, wt.DWORD)
+    _proto(user32.GetDC, wt.HDC, wt.HWND)
+    _proto(user32.ReleaseDC, ctypes.c_int, wt.HWND, wt.HDC)
+    _proto(user32.GetCursorPos, wt.BOOL, ctypes.POINTER(wt.POINT))
+    _proto(user32.MonitorFromPoint, wt.HMONITOR, wt.POINT, wt.DWORD)
+    _proto(user32.GetMonitorInfoW, wt.BOOL, wt.HMONITOR, ctypes.POINTER(MONITORINFO))
+    _proto(user32.UpdateLayeredWindow, wt.BOOL, wt.HWND, wt.HDC, ctypes.POINTER(wt.POINT), ctypes.POINTER(wt.SIZE),
+           wt.HDC, ctypes.POINTER(wt.POINT), wt.DWORD, ctypes.POINTER(BLENDFUNCTION), wt.DWORD)
+    _proto(user32.PeekMessageW, wt.BOOL, ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT, wt.UINT)
+    _proto(user32.TranslateMessage, wt.BOOL, ctypes.POINTER(wt.MSG))
+    _proto(user32.DispatchMessageW, ctypes.c_ssize_t, ctypes.POINTER(wt.MSG))
+    _proto(gdi32.CreateCompatibleDC, wt.HDC, wt.HDC)
+    _proto(gdi32.CreateDIBSection, wt.HBITMAP, wt.HDC, ctypes.c_void_p, wt.UINT, ctypes.POINTER(ctypes.c_void_p),
+           wt.HANDLE, wt.DWORD)
+    _proto(gdi32.SelectObject, wt.HGDIOBJ, wt.HDC, wt.HGDIOBJ)
+    _proto(gdi32.DeleteObject, wt.BOOL, wt.HGDIOBJ)
+    _proto(gdi32.DeleteDC, wt.BOOL, wt.HDC)
+    _proto(gdi32.GetDeviceCaps, ctypes.c_int, wt.HDC, ctypes.c_int)
+    _proto(shcore.GetDpiForMonitor, ctypes.c_long, wt.HMONITOR, ctypes.c_int, ctypes.POINTER(wt.UINT),
+           ctypes.POINTER(wt.UINT))
+    _proto(dwmapi.DwmFlush, ctypes.c_long)
+    _proto(user32.GetWindowLongW, ctypes.c_long, wt.HWND, ctypes.c_int)
+    _proto(user32.SetWindowLongW, ctypes.c_long, wt.HWND, ctypes.c_int, ctypes.c_long)
+    _proto(user32.SetWindowPos, wt.BOOL, wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT)
+    _proto(winmm.timeBeginPeriod, wt.UINT, wt.UINT)
 
 
 def _font(names, size):
+    if MAC:  # Segoe UI Semibold / Regular -> SF Pro Semibold / Regular
+        return mac.ui_font(size, semibold=names[0] == "seguisb.ttf")
     for n in names:
         p = os.path.join(FONTS, n)
         if os.path.exists(p):
@@ -175,6 +183,7 @@ class Hud:
         self.pen_on = False      # pencil highlighted (drawing is on)
         self.buttons = {}        # clickable boxes on the pill, screen px: {"draw": rect, "stop": rect}
         self.pill_rect = None    # the pill's box, screen px
+        self.on_click = None     # Mac: on_click(x, y) for presses on the pill (its window gets them)
         self._clickable = False
         self.visible = False
         self.shown_at = 0.0
@@ -195,7 +204,8 @@ class Hud:
         self.capture_excluded = False
         self.hwnd = None
         ready = threading.Event()
-        threading.Thread(target=self._thread, args=(ready,), daemon=True, name="hud").start()
+        threading.Thread(target=self._thread_mac if MAC else self._thread, args=(ready,), daemon=True,
+                         name="hud").start()
         ready.wait(5)
 
     # ---------- public ----------
@@ -268,6 +278,41 @@ class Hud:
             if now - fps_t >= 1.0:
                 self.fps, frames, fps_t = frames / (now - fps_t), 0, now
 
+    def _thread_mac(self, ready):
+        # The window is an NSPanel updated on the main thread (mac.Overlay); this thread animates
+        # and renders. sharingType none keeps it out of screen recordings.
+        self.overlay = mac.Overlay(mac.overlay_level(above_drawing=True), hidden_from_capture=True,
+                                   on_mouse=lambda kind, x, y: kind == "down" and self.on_click
+                                   and self.on_click(x, y))
+        self.capture_excluded = True
+        self.target_fps = 60.0
+        ready.set()
+        shown = False
+        frames, fps_t = 0, time.monotonic()
+        next_t = time.perf_counter()
+        while True:
+            busy = False
+            try:
+                busy = self._step()
+                if busy:
+                    shown = True
+                    frames += 1
+                elif shown:
+                    self.overlay.hide()
+                    shown = False
+            except Exception:
+                self.on_error("hud frame failed:\n" + traceback.format_exc())
+                time.sleep(0.2)
+            next_t += 1 / self.target_fps if busy else 0.02
+            delay = next_t - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_t = time.perf_counter()
+            now = time.monotonic()
+            if now - fps_t >= 1.0:
+                self.fps, frames, fps_t = frames / (now - fps_t), 0, now
+
     def _step(self):
         """Advance animations and draw one frame. Returns False when nothing is on screen."""
         with self._lock:
@@ -295,14 +340,30 @@ class Hud:
         clickable = self.pen_button and state[0] in BUTTON_MODES
         if clickable != self._clickable:  # click-through except while the pencil is offered
             self._clickable = clickable
-            ex = user32.GetWindowLongW(self.hwnd, -20)
-            user32.SetWindowLongW(self.hwnd, -20, (ex & ~0x20) if clickable else (ex | 0x20))
+            if MAC:
+                self.overlay.click_through(not clickable)
+            else:
+                ex = user32.GetWindowLongW(self.hwnd, -20)
+                user32.SetWindowLongW(self.hwnd, -20, (ex & ~0x20) if clickable else (ex | 0x20))
         img, px, py = self._render(now, dy, *state)
-        self._blit(img, px, py, int(255 * max(0.0, min(1.0, alpha))))
+        alpha = max(0.0, min(1.0, alpha))
+        if MAC:  # rendered in backing pixels; the window, buttons and clicks are in points
+            s = self.scale
+            self.buttons = {k: tuple(round(v / s) for v in b) for k, b in self.buttons.items()}
+            self.pill_rect = tuple(round(v / s) for v in self.pill_rect)
+            self.overlay.show(img, px / s, py / s, s, alpha)
+        else:
+            self._blit(img, px, py, int(255 * alpha))
         return True
 
     # ---------- layout ----------
     def _place_on_cursor_monitor(self):
+        if MAC:
+            x, y = mac.cursor_pos()
+            scr = mac.screen_at(x, y)
+            self.scale = scr[8]
+            self.anchor = (scr[4] * self.scale, scr[5] * self.scale, scr[6] * self.scale)  # backing pixels
+            return
         pt = wt.POINT()
         user32.GetCursorPos(ctypes.byref(pt))
         hmon = user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTONEAREST
@@ -411,15 +472,21 @@ class Hud:
 
         ft, fs, fr = self._fonts()
         t_img = self._text(title, ft, TEXT)
-        img.alpha_composite(t_img, (int(x0 + TEXT_X * s), int(cy - 3 * s - t_img.info["ascent"])))
-        s_img = self._text(subtitle, fs, MUTED)
-        img.alpha_composite(s_img, (int(x0 + TEXT_X * s), int(cy + 15 * s - s_img.info["ascent"])))
+        if subtitle:
+            img.alpha_composite(t_img, (int(x0 + TEXT_X * s), int(cy - 3 * s - t_img.info["ascent"])))
+            s_img = self._text(subtitle, fs, MUTED)
+            img.alpha_composite(s_img, (int(x0 + TEXT_X * s), int(cy + 15 * s - s_img.info["ascent"])))
+        else:  # title alone, on the pill's centre line (same baseline as the timer)
+            img.alpha_composite(t_img, (int(x0 + TEXT_X * s), int(cy + 5.5 * s - t_img.info["ascent"])))
 
         rx = x1 - PAD_R * s
         if right:
+            # A fixed slot, right-aligned: digits can differ in width (SF Pro's do), and the
+            # buttons left of the timer mustn't shift every second.
+            slot = fr.getlength("0:00:00" if len(right) > 5 else "00:00") / SS
             r_img = self._text(right, fr, TEXT)
             img.alpha_composite(r_img, (int(rx - r_img.width), int(cy + 5.5 * s - r_img.info["ascent"])))
-            rx -= r_img.width + 14 * s
+            rx -= max(slot, r_img.width) + 14 * s
         boxes = {}
         if self.pen_button and mode in BUTTON_MODES:
             for name in ("stop", "draw"):  # right to left: stop sits next to the timer
@@ -500,6 +567,8 @@ class Hud:
 
     def bring_to_front(self):
         """Keep the pill above other topmost windows (the drawing layer)."""
+        if MAC:
+            return self.overlay.raise_()  # its window level is already above the drawing layer
         user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
 
     def _patch(self, w, h):

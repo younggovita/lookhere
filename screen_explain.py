@@ -873,7 +873,7 @@ class App:
         taken = [self.label(k) for k, v in self.keys.items() if not v.ok]
         if taken:
             self.hud.show("error", "%s taken by another app" % " and ".join(taken),
-                          "Right-click the tray icon > Settings > Shortcuts", hold=8)
+                          "Right-click the tray icon > Settings", hold=8)
 
     KEY_EVENTS = {"hotkey": "toggle", "pause_hotkey": "pause", "draw_hotkey": "draw"}
     KEY_TITLES = {"hotkey": "record", "pause_hotkey": "pause", "draw_hotkey": "draw"}
@@ -983,6 +983,9 @@ class App:
                           progress=ev[1])
         elif ev == "history":
             self.open_history()
+        elif ev == "settings":
+            import settings
+            settings.open_window(self)
         elif isinstance(ev, tuple) and ev[0] == "trimmed":
             _, rec_dir, ok = ev
             if ok:
@@ -1005,11 +1008,13 @@ class App:
             self.hud.show("done", {"auto": "Following Windows light/dark mode", "dark": "Always dark",
                                    "light": "Always light"}[ev[1]],
                           "Press %s to record" % self.hotkey_label, hold=2.5)
+            self.settings_changed()
         elif isinstance(ev, tuple) and ev[0] == "mic":
             if self.state == "idle":
                 if ev[1] is not None:
                     save_setting("mic", ev[1])
                     self.icon.update_menu()
+                    self.settings_changed()
                 self.test_mic()
         elif isinstance(ev, tuple) and ev[0] == "mic_result":
             self._mic_result(*ev[1:])
@@ -1023,13 +1028,16 @@ class App:
             set_autostart(on)
             self.icon.update_menu()
             self.hud.show("done", "Starts with Windows" if on else "Won't start with Windows",
-                          "Change it any time from this menu", hold=2.5)
+                          "Change it any time in Settings", hold=2.5)
+            self.settings_changed()
         elif isinstance(ev, tuple) and ev[0] == "change_hotkey":
             if self.state == "idle" and not self.capture:
                 self.capture_target = ev[1]
                 self.start_capture()
+                self.settings_changed()
         elif isinstance(ev, tuple) and ev[0] in ("captured", "capture_cancelled", "capture_hint"):
             self._capture_event(*ev)
+            self.settings_changed()
         elif ev == "recopy":
             self.recopy()
         elif ev == "open_folder":
@@ -1163,20 +1171,6 @@ class App:
     def menu_items(self):
         rec = lambda: self.state == "recording"
         put = self.events.put
-        mics = lambda: [dict(label=n or "Windows default", action=(lambda v: lambda: put(("mic", v)))(n),
-                             checked=(lambda v: lambda: CONFIG["mic"] == v)(n))
-                        for n in [""] + input_devices()] + \
-            [dict(sep=True), dict(label="Test microphone", action=lambda: put(("mic", None)),
-                                  enabled=lambda: self.state == "idle")]
-        themes = lambda: [dict(label=l, action=(lambda v: lambda: put(("theme", v)))(v),
-                               checked=(lambda v: lambda: CONFIG["theme"] == v)(v))
-                          for l, v in (("Follow Windows light/dark", "auto"), ("Always dark", "dark"),
-                                       ("Always light", "light"))]
-        # click one, then press the new keys (the pill asks; keys another app owns are refused)
-        shortcuts = lambda: [dict(label=title, hint=self.label(key), action=(lambda k: lambda: put(("change_hotkey", k)))(key),
-                                  enabled=lambda: self.state == "idle")
-                             for key, title in (("hotkey", "Record / finish"), ("pause_hotkey", "Pause / resume"),
-                                                ("draw_hotkey", "Draw on screen"))]
         items = [
             dict(label=lambda: "Finish recording" if rec() else "Start recording", hint=self.hotkey_label,
                  action=lambda: put("toggle"), enabled=lambda: self.state in ("idle", "recording")),
@@ -1188,14 +1182,7 @@ class App:
             dict(label="History", action=lambda: put("history")),
             dict(label="Copy last recording again", action=lambda: put("recopy")),
             dict(sep=True),
-            dict(label="Settings", submenu=lambda: [
-                dict(label="Microphone", submenu=mics),
-                dict(label="Theme", submenu=themes),
-                dict(label="Shortcuts", submenu=shortcuts),
-                dict(sep=True),
-                dict(label="Start with Windows", action=lambda: put("toggle_autostart"), checked=autostart_enabled),
-                dict(label="Open recordings folder", action=lambda: put("open_folder")),
-            ]),
+            dict(label="Settings", action=lambda: put("settings")),
             dict(sep=True),
         ]
         if self.update_info:
@@ -1309,6 +1296,10 @@ class App:
         if on:
             threading.Timer(0.15, self.hud.bring_to_front).start()  # pill stays clickable above the ink
         log("drawing %s" % ("on" if on else "off"))
+
+    def settings_changed(self):
+        import settings
+        settings.refresh()
 
     # ---------- history ----------
     def open_history(self):

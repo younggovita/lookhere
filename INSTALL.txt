@@ -44,3 +44,25 @@ GOOD TO KNOW
 - Recordings older than 30 days are deleted automatically.
 - To uninstall, use Windows Settings > Apps > Installed apps > Lookhere.
 - Licences for the parts Lookhere is built on are in Start menu > Lookhere licences.
+
+
+ON A MAC
+You need a Mac with Apple Silicon (M1 or later) running macOS 15 or later, and a microphone.
+
+1. Open the Lookhere .dmg file (Lookhere-<version>-mac.dmg) and drag Lookhere into the
+   Applications folder.
+2. Open Lookhere from Applications. The first time, macOS says it can't check Lookhere
+   for malware. This happens because the app isn't signed by Apple yet. Click Done.
+3. Open System Settings > Privacy & Security, scroll down to Security, and click
+   "Open Anyway" next to the line about Lookhere. Click "Open Anyway" again and enter
+   your password. It only asks once.
+4. Lookhere lives in the menu bar (top right). The first time you record, macOS asks to
+   let Lookhere use the microphone (click Allow) and record the screen (open System
+   Settings and switch Lookhere on under Screen & System Audio Recording). Then quit
+   Lookhere from its menu and open it again.
+5. The first time it opens, Lookhere downloads its speech model (about 460 MB). It only
+   happens once.
+
+On a Mac the shortcuts use Ctrl+Option instead of Ctrl+Alt (Ctrl+Option+H to record),
+and you paste with Cmd+V. When an update is out, click the menu bar icon, then "Update to".
+To uninstall, quit Lookhere and drag it from Applications to the Bin.

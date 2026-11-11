@@ -15,7 +15,8 @@ sys.path.insert(0, HERE)
 import paths  # noqa: E402
 
 OUT = os.path.join(HERE, "licenses")
-SITE = os.path.join(HERE, "venv", "Lib", "site-packages")
+SITE = (os.path.join(HERE, "venv", "lib", "python%d.%d" % sys.version_info[:2], "site-packages") if paths.MAC
+        else os.path.join(HERE, "venv", "Lib", "site-packages"))
 
 # package, licence, project page; licence text found in the package's dist-info where it ships one
 PACKAGES = [
@@ -33,6 +34,8 @@ PACKAGES = [
     ("pynput", "LGPL-3.0", "https://github.com/moses-palmer/pynput"),
     ("pystray", "LGPL-3.0", "https://github.com/moses-palmer/pystray"),
 ]
+if paths.MAC:  # the Mac app talks to macOS through PyObjC
+    PACKAGES.append(("pyobjc-core", "MIT (PyObjC frameworks: MIT)", "https://github.com/ronaldoussoren/pyobjc"))
 
 
 def dist_info(pkg):
@@ -69,7 +72,7 @@ def copy_licence_files(pkg, info):
 def main():
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(OUT)
-    exe = paths.ffmpeg_exe()
+    exe = os.environ.get("LOOKHERE_FFMPEG") or paths.ffmpeg_exe()  # build.py --mac names the one it bundles
     lines = [
         "Lookhere: third-party software notices",
         "=" * 39,
@@ -85,15 +88,20 @@ def main():
     m = re.search(r"ffmpeg version (\d+(?:\.\d+)+)", first)
     number = m.group(1) if m else "?"
     gpl = os.path.join(os.path.dirname(os.path.dirname(exe)), "LICENSE")
+    if paths.MAC:  # the Mac build ships no LICENSE file; pystray carries the same GPL v3 text
+        gpl = next(iter(glob.glob(os.path.join(SITE, "pystray-*.dist-info", "COPYING"))), "")
     if os.path.exists(gpl):
         shutil.copyfile(gpl, os.path.join(OUT, "ffmpeg-LICENSE-GPLv3.txt"))
+    origin = ("This is the unmodified static macOS (Apple Silicon) build shipped in the imageio-ffmpeg package,\n"
+              "https://github.com/imageio/imageio-ffmpeg." if paths.MAC else
+              "This is the unmodified Windows build from https://www.gyan.dev/ffmpeg/builds/.")
     lines += [
-        "FFmpeg (ffmpeg.exe)",
+        "FFmpeg (%s)" % ("ffmpeg" if paths.MAC else "ffmpeg.exe"),
         "-------------------",
         first,
         "Licence: GNU General Public License version 3 (file: ffmpeg-LICENSE-GPLv3.txt).",
         "Lookhere runs ffmpeg as a separate program; it is not part of Lookhere's own code.",
-        "This is the unmodified Windows build from https://www.gyan.dev/ffmpeg/builds/.",
+        origin,
         "Source code: FFmpeg %s source is at https://github.com/FFmpeg/FFmpeg/releases/tag/n%s" % (number, number),
         "and https://ffmpeg.org/download.html; the build's configuration and the versions of its",
         "external libraries are listed in ffmpeg-build-configuration.txt. On request, the author of",
@@ -129,7 +137,8 @@ def main():
     ]
     py_lic = os.path.join(os.path.dirname(sys.base_prefix if hasattr(sys, "base_prefix") else sys.prefix),
                           os.path.basename(sys.base_prefix), "LICENSE.txt")
-    for cand in (py_lic, os.path.join(sys.base_prefix, "LICENSE.txt")):
+    for cand in (py_lic, os.path.join(sys.base_prefix, "LICENSE.txt"),
+                 os.path.join(sys.base_prefix, "lib", "python%d.%d" % sys.version_info[:2], "LICENSE.txt")):
         if os.path.exists(cand):
             shutil.copyfile(cand, os.path.join(OUT, "python-LICENSE.txt"))
             break

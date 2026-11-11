@@ -1535,6 +1535,8 @@ class App:
             self.hud.show("processing", "Installing the update", "Lookhere restarts by itself", progress=1.0)
             time.sleep(1.0)
             updater.install(path)  # the installer closes this app and starts the new one
+            if paths.MAC:  # Mac: the new app is staged; it's swapped in and opened once this one quits
+                self.events.put("quit")
         except Exception as e:
             log("update failed: %r" % e)
             self.state = "idle"
@@ -1637,6 +1639,12 @@ def selftest(seconds=5):
         })
         out["ok"] = (w.returncode == 0 and files.get("preview.mp4", 0) > 10000 and "recording.md" in files
                      and out["video_live"])
+        try:  # 0 = pure silence: on a Mac, Lookhere doesn't have the Microphone permission
+            import numpy as np
+            import soundfile
+            out["audio_peak"] = round(float(np.abs(soundfile.read(os.path.join(r.dir, "audio.wav"))[0]).max()), 5)
+        except Exception as e:
+            out["audio_peak"] = repr(e)[:80]
         shutil.rmtree(r.dir, ignore_errors=True)  # this test's own recording
     except Exception:
         out["ok"] = False
@@ -1666,6 +1674,13 @@ def main():
         return
     if "--selftest" in sys.argv:
         sys.exit(selftest())
+    if "--update" in sys.argv:  # install the newest release now, no UI (tests the update path)
+        import updater
+        info = updater.latest(CONFIG["update_repo"])
+        print("latest:", info and info["version"], "running:", paths.VERSION)
+        if updater.is_newer(info):
+            updater.install(updater.download(info))
+        return
     if sys.stderr is None:  # pythonw: keep library warnings and crashes somewhere readable
         sys.stderr = sys.stdout = open(os.path.join(HERE, "screen-explain.err.log"), "a", encoding="utf-8")
     if paths.MAC:

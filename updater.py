@@ -1,25 +1,42 @@
 """Auto-update from GitHub Releases.
 
-Each release (made by `build.py --publish`) carries Lookhere-Setup-<version>.exe and a .sha256
-file. The installed app asks GitHub for the latest release, and if it is newer, downloads the
-installer, checks its SHA-256 against the published one, and runs it silently with /UPDATE=1;
-the installer closes Lookhere, replaces it, and starts it again.
+Each release (made by `build.py --publish`) carries Lookhere-Setup-<version>.exe for Windows and
+Lookhere-<version>-mac.dmg for Macs, each with a .sha256 file. The installed app asks GitHub for
+the latest release, and if it is newer, downloads its own platform's file and checks its SHA-256
+against the published one.
+Windows: runs the installer silently with /UPDATE=1; the installer closes Lookhere, replaces it,
+and starts it again.
+Mac: copies the new Lookhere.app out of the dmg next to the running one; once Lookhere quits, a
+small shell script swaps the two and opens the new one.
 """
 import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import urllib.request
 
 import paths
 
+SUFFIX = ".dmg" if paths.MAC else ".exe"  # which release asset this platform installs
+
 API = "https://api.github.com/repos/%s/releases/latest"
+
+
+def _ssl_context():
+    """The Mac app's Python (python.org build) has no CA roots of its own: trust what macOS trusts,
+    through truststore (already in the app for the speech model download)."""
+    if not paths.MAC:
+        return None
+    import ssl
+    import truststore
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
 def _get(url, accept="application/vnd.github+json"):
     req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "Lookhere/" + paths.VERSION})
-    return urllib.request.urlopen(req, timeout=20)
+    return urllib.request.urlopen(req, timeout=20, context=_ssl_context())
 
 
 def version_tuple(v):
@@ -35,7 +52,7 @@ def latest(repo):
     with _get(API % repo) as r:
         rel = json.load(r)
     assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
-    exe = next((n for n in assets if n.lower().endswith(".exe")), None)
+    exe = next((n for n in assets if n.lower().endswith(SUFFIX)), None)
     if not exe or exe + ".sha256" not in assets:
         return None
     return {"version": rel["tag_name"].lstrip("vV"), "installer_url": assets[exe],
@@ -73,6 +90,46 @@ def download(info, progress=lambda frac: None):
 
 
 def install(path):
-    """Run the installer silently; it closes this app and starts the new version."""
+    """Run the installer silently; it closes this app and starts the new version.
+    Mac: stage the new app and return; the caller quits Lookhere, then the swap happens."""
+    if paths.MAC:
+        return _install_mac(path)
     subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"],
                      creationflags=0x00000008 | 0x00000200)  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+
+
+# Waits for Lookhere ($1 = pid) to quit, swaps $3 (the staged new app) into $2, opens it.
+# If the swap fails part-way, the old app goes back so there is always a Lookhere to open.
+_SWAP = r"""
+pid="$1"; app="$2"; new="$3"
+i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.2; i=$((i+1)); done
+tmp="$(mktemp -d)"
+if mv "$app" "$tmp/Lookhere.app"; then
+  mv "$new" "$app" || mv "$tmp/Lookhere.app" "$app"
+fi
+rm -rf "$tmp" "$new"
+open "$app"
+"""
+
+
+def _install_mac(dmg):
+    exe = os.path.realpath(sys.executable)  # .../Lookhere.app/Contents/MacOS/Lookhere
+    app = os.path.dirname(os.path.dirname(os.path.dirname(exe)))
+    if not app.endswith(".app") or "/AppTranslocation/" in app or app.startswith("/Volumes/"):
+        raise ValueError("Move Lookhere into Applications first, then update")
+    staged = os.path.join(os.path.dirname(app), ".Lookhere-update.app")
+    mount = tempfile.mkdtemp(prefix="lookhere-dmg-")
+    subprocess.run(["hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount, dmg],
+                   check=True, capture_output=True)
+    try:
+        subprocess.run(["rm", "-rf", staged], check=True)
+        try:
+            subprocess.run(["ditto", os.path.join(mount, "Lookhere.app"), staged], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            raise ValueError("Can't write to %s" % os.path.dirname(app))
+        subprocess.run(["codesign", "--verify", "--deep", staged], check=True, capture_output=True)
+    finally:
+        subprocess.run(["hdiutil", "detach", mount, "-quiet"])
+    log = open(os.path.join(paths.DATA, "update.log"), "a")
+    subprocess.Popen(["/bin/sh", "-c", _SWAP, "swap", str(os.getpid()), app, staged],
+                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)

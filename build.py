@@ -4,6 +4,10 @@
     venv\\Scripts\\python.exe build.py --bump     bump the patch version first (0.1.0 -> 0.1.1)
     venv\\Scripts\\python.exe build.py --test     also install into a temp folder and run the self-test
 
+    venv/bin/python build.py --mac [--bump] [--test] [--publish]
+        on a Mac: dist/Lookhere-<version>-mac.dmg (menu bar app, ad-hoc signed); --test runs the
+        self-test from the built app; --publish adds the dmg to the v<version> release
+
 Steps: PyInstaller bundles the app (one folder, no Python needed on the target PC), ffmpeg.exe
 and the ding go in with it, then Inno Setup wraps that folder into one installer. Speech runs
 on the CPU in the installed app; the model downloads on first launch. Recordings and settings
@@ -38,7 +42,10 @@ def main():
     ap.add_argument("--test", action="store_true")
     ap.add_argument("--publish", action="store_true", help="upload the installer as a GitHub release")
     ap.add_argument("--notes", default="", help="release notes for --publish")
+    ap.add_argument("--mac", action="store_true", help="build the Mac .app and .dmg (run on a Mac)")
     args = ap.parse_args()
+    if args.mac != (sys.platform == "darwin"):
+        sys.exit("--mac builds the Mac app on a Mac; on Windows build without it")
 
     vfile = os.path.join(HERE, "VERSION")
     version = open(vfile, encoding="utf-8").read().strip()
@@ -48,6 +55,14 @@ def main():
         with open(vfile, "w", encoding="utf-8") as f:
             f.write(version + "\n")
     print("Building Lookhere", version)
+    if args.mac:
+        import build_mac
+        dmg = build_mac.build(version)
+        if args.test:
+            build_mac.test(dmg)
+        if args.publish:
+            publish([dmg], version, args.notes)
+        return
 
     ffmpeg = paths.ffmpeg_exe()
     if not ffmpeg:
@@ -84,20 +99,43 @@ def main():
     if args.test:
         test_install(setup)
     if args.publish:
-        publish(setup, version, args.notes)
+        publish([setup], version, args.notes)
 
 
-def publish(setup, version, notes):
-    """GitHub release v<version> with the installer and its SHA-256: what installed copies update from."""
+MAC_NOTES = ("Mac (Apple Silicon, macOS 15 or later): open the .dmg and drag Lookhere into Applications. "
+             "It isn't signed by Apple yet, so the first time you open it macOS says it can't check it for "
+             "malware: click Done, then open System Settings > Privacy & Security, scroll down and click "
+             "Open Anyway next to Lookhere, then Open Anyway again. It only asks once.")
+
+
+def publish(files, version, notes):
+    """Add the installers (each with its SHA-256) to GitHub release v<version>, creating the release
+    if this is the first platform to publish it: what installed copies update from. The PC and the
+    Mac each publish their own file to the same tag."""
     import hashlib
-    h = hashlib.sha256(open(setup, "rb").read()).hexdigest()
-    sha_file = setup + ".sha256"
-    with open(sha_file, "w", encoding="utf-8") as f:
-        f.write("%s  %s\n" % (h, os.path.basename(setup)))
     repo = json.load(open(os.path.join(HERE, "release.json"), encoding="utf-8"))["repo"]
-    run(["gh", "release", "create", "v" + version, setup, sha_file, "--repo", repo,
-         "--title", "Lookhere " + version, "--notes", notes or "Lookhere " + version])
-    print("Published v%s to %s" % (version, repo))
+    upload = []
+    for path in files:
+        h = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        with open(path + ".sha256", "w", encoding="utf-8") as f:
+            f.write("%s  %s\n" % (h, os.path.basename(path)))
+        upload += [path, path + ".sha256"]
+    tag = "v" + version
+    mac = any(p.endswith(".dmg") for p in files)
+    found = subprocess.run(["gh", "release", "view", tag, "--repo", repo, "--json", "body"],
+                           capture_output=True, text=True)
+    if found.returncode != 0:
+        notes = notes or "Lookhere " + version
+        if mac and "Open Anyway" not in notes:
+            notes += "\n\n" + MAC_NOTES
+        run(["gh", "release", "create", tag, *upload, "--repo", repo, "--title", "Lookhere " + version,
+             "--notes", notes])
+    else:
+        run(["gh", "release", "upload", tag, *upload, "--repo", repo, "--clobber"])
+        body = json.loads(found.stdout).get("body") or ""
+        if mac and "Open Anyway" not in body:
+            run(["gh", "release", "edit", tag, "--repo", repo, "--notes", (body + "\n\n" + MAC_NOTES).strip()])
+    print("Published %s to %s %s" % (", ".join(os.path.basename(p) for p in files), repo, tag))
 
 
 def test_install(setup):

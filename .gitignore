@@ -9,3 +9,6 @@ selftest.json
 theme-preview.png
 draw-check.png
 licenses/
+
+# local dev screenshots, never published
+dev-screenshots/

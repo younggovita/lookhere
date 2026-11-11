@@ -79,9 +79,8 @@ venv\Scripts\python.exe build.py --bump --test --publish --notes "What changed"
   folder, runs the self-test (records 5 s, builds it, checks every file) and uninstalls it;
   `--publish` creates GitHub release v<version> (repo in `release.json`) with the installer and
   its SHA-256.
-- **Auto-update is switched off** (`check_updates: false`): the repo is private, so installed
-  copies can't download releases. To turn it on, publish installers somewhere public (for example a
-  releases-only repo) and point `update_repo` at it. When on, **installed copies update themselves**: they check the latest release at startup and every
+- **Auto-update is on** (`check_updates: true`, releases from the public `update_repo`).
+  **Installed copies update themselves**: they check the latest release at startup and every
   6 hours, offer "Update to x.y.z" in the tray, download it, check the SHA-256, install silently
   (keeping recordings, settings and the Start with Windows choice) and restart.
 - **Installed vs this folder**: the installer ships CPU speech (any PC; the ~460 MB model

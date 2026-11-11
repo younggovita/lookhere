@@ -74,7 +74,7 @@ CONFIG = {
     "sounds": True,             # ding when the recording goes live
     "focus_window_title": "",  # fallback window title if the starting window has closed
     "update_repo": "younggovita/lookhere",  # GitHub repo whose releases the installed app updates from
-    "check_updates": False,     # off for now: releases are in a private repo (see README)
+    "check_updates": True,      # installed copies update from public GitHub releases (see README)
     "mic": "",                  # microphone name; "" = the Windows default
     "draw_style": "shadow",     # drawn marks: "shadow" (default), "outline" or "plain"
     "theme": "auto",            # auto = white or black pill following Windows light/dark; or "dark" / "light"

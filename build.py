@@ -84,6 +84,12 @@ def main():
          "--exclude-module", "nvidia", "--exclude-module", "PyInstaller",
          os.path.join(HERE, "screen_explain.py")])
 
+    # Compiled leftovers inside package metadata carry this PC's folder paths: don't ship them.
+    for root, dirs, _ in os.walk(os.path.join(work, "app", "Lookhere")):
+        if ".dist-info" in root and "__pycache__" in dirs:
+            shutil.rmtree(os.path.join(root, "__pycache__"), ignore_errors=True)
+            dirs.remove("__pycache__")
+
     iscc = next((p for p in ISCC if os.path.exists(p)), None)
     if not iscc:
         sys.exit("Inno Setup not found (winget install JRSoftware.InnoSetup)")

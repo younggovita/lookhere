@@ -1,134 +1,120 @@
 # Lookhere
 
-Point at your screen, say what's wrong, paste it into any AI chat. (Lives in `tools\screen-explain`.)
+Point at your screen, say what's wrong, paste it into any AI chat.
 
 Press **Ctrl+Alt+H**, talk through a problem while you click around, press **Ctrl+Alt+H** again.
-About 2 seconds later the video is on your clipboard and you're back in the window you started from:
-press **Ctrl+V** in any chat (Claude, ChatGPT...). In Claude, the screen-recording skill also reads the
-frames and transcript saved next to the video. A soft ding plays when recording goes live.
+A couple of seconds later the video is on your clipboard and you're back in the window you started
+from: press **Ctrl+V** in any chat (Claude, ChatGPT...). A soft ding plays when recording goes live.
+
+Windows 10/11 (64-bit) and macOS 15+ (Apple Silicon).
+
+## Download
+Get the latest installer from the [releases page](https://github.com/younggovita/lookhere/releases/latest):
+`Lookhere-Setup-<version>.exe` for Windows, `Lookhere-<version>-mac.dmg` for a Mac.
+[INSTALL.txt](INSTALL.txt) is the step-by-step guide, including the "Windows protected your PC"
+and Mac "Open Anyway" prompts and how to uninstall.
 
 ## While recording
-| Key | Does |
+| Key (Windows) | Does |
 |---|---|
 | **Ctrl+Alt+H** | start / finish |
 | **Ctrl+Alt+P** | pause / resume (paused stretches are cut out of the result) |
 | **Ctrl+Alt+M** | draw on screen: drag to make lime marks that show in the recording and fade after ~3 s |
 | pencil button on the pill | same as Ctrl+Alt+M: click to draw, click again to stop |
 | red stop button on the pill | same as Ctrl+Alt+H: finish the recording |
-| **Esc** | cancel and delete |
+| **Esc** | cancel and delete the recording, from any app, with no confirmation |
 
-Change them from the tray: right-click > Settings > Shortcuts, click one, press the new keys.
-Keys another app already owns are refused.
+On a Mac the shortcuts use Ctrl+Option instead of Ctrl+Alt, and you paste with Cmd+V.
 
-A floating pill at the top of the screen you're on shows what's happening: Arming (the screen
-video warms up for ~2s; your voice and clicks are already recording), Recording (timer and live
-mic meter), Paused, Drawing, Building (progress), then Copied. It is click-through and never
-appears in recordings. Colours: a black pill (dark) or white pill (light), acid lime accents in
-both (on black chips in light mode), red only while recording. Tray > Settings > **Theme**: Follow Windows
-light/dark mode (default), Always dark, Always light. `theme-preview.png` shows every state.
+Change them in Settings > Shortcuts: click **Change**, then press the new keys. A shortcut needs
+Ctrl, Alt or Win (Shift alone isn't enough); keys another app already owns, and standard ones like
+Ctrl+C, are refused.
 
-## Tray menu
-Right-click the tray icon: Lookhere's own menu, styled like the pill (status at the top, shortcuts on
-the right, greyed-out items when they don't apply). Left-click starts or finishes a recording.
-- **History...**: every recording with a thumbnail, length and first words. Play, Copy, Trim,
-  Folder, Delete (to the Recycle Bin). **Trim** shows the recording as a filmstrip with lime start
-  and end handles; saving rebuilds the recording (video, transcript, frames) and copies it.
+A floating pill at the top of the screen you're on shows what's happening: Starting (the screen
+video warms up for a second or two; your voice and clicks are already recording), Recording (timer
+and live mic meter), Paused, Drawing, Building (progress), then "Recording is on your clipboard".
+It never appears in recordings (Windows 10 version 2004 or later). When idle, clicks pass through
+it; while recording it has two buttons (stop and pencil). A black pill in dark mode or a white pill in light mode, lime accents,
+red only while recording.
+
+No microphone? Lookhere still records the screen and says the recording has no voice.
+
+## Menu
+Right-click the tray icon (Windows) or click the menu bar icon (Mac). Left-click on Windows starts
+or finishes a recording.
+- **History**: every recording with a thumbnail, length and first words. Play, Copy, Trim, Folder,
+  Delete (to the Recycle Bin / Bin). **Trim** shows the recording as a filmstrip with start and end
+  handles; saving rebuilds the recording and copies it. The raw recording is never changed, so a
+  trim can be undone.
 - **Copy last recording again**
-- **Settings**, a flyout holding:
-  - **Microphone**: Windows default or a specific mic; **Test microphone** shows a live meter.
-  - **Theme**: Follow Windows, Always dark, Always light.
-  - **Shortcuts**: record, pause, draw; click one and press the new keys.
-  - **Start with Windows** (a per-user Run entry; the installer's checkbox sets the same thing)
-  - **Open recordings folder**
-- **Check for updates** / **Update to x.y.z** (installed copies only)
+- **Settings** (its own window):
+  - **Microphone**: the system default or a specific mic; **Test** shows a live meter.
+  - **Theme**: Follow Windows, Dark, Light.
+  - **Shortcuts**: record, pause, draw.
+  - **Start with Windows** / Open at login
+  - **Recordings folder**: Open
+- **Check for updates** / **Update to x.y.z**
 
-## What it records
-- Full video of every monitor with the real cursor (ffmpeg desktop duplication on the GPU,
-  `screen0.mkv`, `screen1.mkv`). `preview.mp4` follows whichever monitor the cursor is on and has
-  your voice.
-- For the AI's reading: the monitor your cursor is on, checked twice a second. Frames are kept on
-  every click, just after a click, when you point (cursor stops), after drawing, when the screen
-  changes, and at least every 5 seconds.
-- The chosen mic (whichever input channel is loudest), mouse clicks and the title of the window
-  in front. **Never keystrokes.** Nothing is recorded while paused.
-- Passwords or private info on screen will be in the frames. Everything stays on this PC
-  until you paste it somewhere.
+## Privacy
+- Recordings, transcripts and logs stay on your computer. Nothing is uploaded; a recording leaves
+  only when you paste it somewhere.
+- Recorded: every monitor (video), the chosen microphone, mouse clicks, the cursor path and the
+  title of the window in front. **Never keystrokes.**
+- Pausing: paused stretches are cut from the video you paste, and no voice, clicks or frames are
+  kept for them. The raw screen video in the recording's folder still contains them until that
+  recording is deleted, so don't rely on pause to hide something on screen.
+- Anything on screen while recording is in the video, passwords included. Close private things
+  first.
+- Speech is transcribed on your computer (Whisper, English only for now).
+- Lookhere contacts the internet for two things only:
+  1. **Update check** (installed copies): one request to GitHub's releases API at startup and
+     every 6 hours. The installer is downloaded only when you click Update. Turn it off with
+     `"check_updates": false` in `config.json`.
+  2. **Speech model**: downloaded once from Hugging Face on first run (about 460 MB). After that
+     it loads from disk with no network call.
+- No telemetry, no accounts, no analytics.
 
-## What the AI gets
-`recordings\<date_time>\recording.md`: transcript plus a timeline of up to 36 frames with clicks
-ringed in red. Transcription runs locally (Whisper large-v3-turbo on the GPU racing small.en on the
-CPU, first to finish wins). Claude reads it with the `screen-recording` skill. Edits (trims) live in
-`edits.json`; the raw recording is never changed, so a trim can be undone.
-
-## Settings (`config.json`)
-Written by the tray menu; you can also edit it: `hotkey`, `pause_hotkey`, `draw_hotkey`, `mic`,
-`theme`, `keep_days` (default 30: older recordings are deleted at startup), `check_updates`,
-`update_repo`, `video_encoder`, `periodic_every`, `change_threshold`.
-
-## Files
-- `screen_explain.py` tray app, hotkeys, capture; `process.py <recording_dir>` builds a recording
-- `hud.py` status pill; `draw.py` drawing layer; `history.py` History and Trim; `traymenu.py` tray menu
-- `logo.py` logo; `updater.py` auto-update; `paths.py` where files live; `ding.wav` (`make_ding.py`)
-- `screen-explain.log` what happened; `process-last.log` the last build's errors
-
-## Building, releasing, updating
-```
-venv\Scripts\python.exe build.py --bump --test --publish --notes "What changed"
-```
-- `--bump` raises the version (0.2.0 -> 0.2.1); `--test` installs the new installer into a temp
-  folder, runs the self-test (records 5 s, builds it, checks every file) and uninstalls it;
-  `--publish` creates GitHub release v<version> (repo in `release.json`) with the installer and
-  its SHA-256.
-- **Auto-update is on** (`check_updates: true`, releases from the public `update_repo`).
-  **Installed copies update themselves**: they check the latest release at startup and every
-  6 hours, offer "Update to x.y.z" in the tray, download it, check the SHA-256, install silently
-  (keeping recordings, settings and the Start with Windows choice) and restart.
-- **Installed vs this folder**: the installer ships CPU speech (any PC; the ~460 MB model
-  downloads on first launch). This folder's copy also has GPU speech and never self-updates.
-  Video encoding uses NVIDIA, AMD or Intel, or Windows' own on anything else.
-- **First run on another PC**: the installer isn't code-signed (by choice: a certificate costs
-  money every year), so Windows shows "Windows protected your PC". Click **More info**, then
-  **Run anyway**. It only asks once.
-- **Licences**: `make_licenses.py` (run by the build) writes `licenses\` with every bundled
-  component's licence and `THIRD-PARTY-NOTICES.txt`; the installer puts it next to the app with a
-  "Lookhere licences" Start menu shortcut. ffmpeg is GPL v3: the notice names the exact build, links
-  its source and includes the written offer to provide source on request (for three years).
-
-## Porting to Mac (later)
-The pure-Python parts carry over: `process.py`, `updater.py` (needs a .dmg/.pkg asset), the
-frame picking, transcription and markdown. Windows-specific pieces and their Mac equivalents:
-
-| Windows piece | Where | Mac equivalent |
+## Where things are
+| | Windows (installed) | Mac (installed) |
 |---|---|---|
-| ffmpeg `ddagrab` + NVENC | `ScreenVideo` | ffmpeg `avfoundation` or ScreenCaptureKit, `h264_videotoolbox` |
-| layered window pill / drawing (`UpdateLayeredWindow`, hidden from capture) | `hud.py`, `draw.py` | borderless `NSWindow` via PyObjC, `sharingType = .none` |
-| `RegisterHotKey` | `SystemHotkey` | Carbon `RegisterEventHotKey` or `NSEvent` global monitor (needs Accessibility permission) |
-| clipboard file (`CF_HDROP`) | `set_clipboard` | `NSPasteboard` file URL |
-| Run key, window focus, theme from registry | `screen_explain.py` | LaunchAgent / SMAppService, `NSRunningApplication`, `AppleInterfaceStyle` |
-| Inno Setup installer | `installer.iss` | `.app` via PyInstaller/py2app, signed and notarised (Apple Developer ID) |
+| Recordings, `config.json`, logs | `%LOCALAPPDATA%\Lookhere` | `~/Library/Application Support/Lookhere` |
+| Speech model | `%USERPROFILE%\.cache\huggingface` | `~/.cache/huggingface` |
 
-Mac port status (branch `mac-port`, started 2026-10-30 on an M1):
-- **Done:** `paths.py` (Mac data folder, `venv/bin/python`, Homebrew ffmpeg); screen video on
-  ScreenCaptureKit (`MacScreenVideo` / `mac.ScreenRecording`, one `screenN.mp4` per display: ffmpeg's
-  `avfoundation` input records windows that are hidden from capture, ScreenCaptureKit leaves them out);
-  `process.py` preview on VideoToolbox; `mac.py` (cursor, front window title, `NSPasteboard`
-  clipboard, refocus, `AppleInterfaceStyle`, `Overlay` window); Core Audio mics; `afplay` ding;
-  lock-file single instance; the pill (`hud.py`) and drawing layer (`draw.py`) as `NSPanel`s via
-  `mac.Overlay`, 60 fps, SF Pro, the pill hidden from capture, strokes as vector `CAShapeLayer`s; global hotkeys via Carbon
-  `RegisterEventHotKey` (`mac.Hotkey`: exclusive like `RegisterHotKey`, no Accessibility needed;
-  Ctrl+Option+H/P/M); pystray menu bar icon (a template image, red while recording, hollow dot while building) with the native menu; Open at login (a LaunchAgent).
-  The pill's buttons and the ink take clicks through their own windows, and Esc is a hotkey
-  while recording, so recording, pausing, drawing and cancelling need no Accessibility.
-  The mic runs in its own process (`mic.py`): stopping PortAudio in-process can deadlock in
-  Core Audio on a Mac. The app runs (`venv/bin/python screen_explain.py`) and `--selftest` passes.
-  The styled menu (`macmenu.py`, drawn like the pill, never takes focus), Settings with shortcut
-  rebinding, and History run on a Mac. The mic process ends by itself if the app dies.
-- **Next:** stopping the worker if the app crashes, Trim checked on a Mac, `.app` build.
-  What the Mac work means for Windows: `MAC-TO-WINDOWS.md`. Smaller: `.mp4` doesn't survive
-  a hard stop the way `.mkv` did. The pencil cursor relies on a private window-server property
-  (`SetsCursorInBackground`), since macOS only lets the front app change the cursor.
-- Needs Screen Recording and Microphone permission for whatever launches it (Terminal, Claude...),
-  plus Accessibility to log your clicks in the recording (pynput); everything else works without it.
-- Mac setup: `python3 -m venv venv && venv/bin/pip install mss numpy pystray sounddevice soundfile
-  pillow pynput faster-whisper pyobjc-framework-Cocoa pyobjc-framework-Quartz
-  pyobjc-framework-ScreenCaptureKit`, `brew install ffmpeg`. macOS 15 or later.
+- Each recording is a folder: the raw screen video per monitor (roughly 45 MB a minute per
+  monitor), the voice track, frames, `preview.mp4` (what gets pasted), `recording.md`, a transcript.
+- **Recordings older than 30 days are deleted permanently at startup** (`keep_days` in
+  `config.json`; raise it to keep them longer). There is no size cap and no maximum length, so a
+  forgotten recording keeps growing until you stop it.
+- `screen-explain.log` says what happened (folder names, mic names, errors; never transcripts or
+  window titles). `process-last.log` holds the last build's errors.
+- Uninstalling removes the app, not your data: delete the folders above to remove recordings,
+  settings and the speech model too.
+
+## Settings file (`config.json`)
+Written by the Settings window; you can also edit it (quit Lookhere first): `hotkey`,
+`pause_hotkey`, `draw_hotkey`, `mic`, `theme`, `keep_days` (default 30), `check_updates`,
+`update_repo`, `video_encoder`, `periodic_every`, `change_threshold`, `recordings_dir`. Only the
+values you've changed are stored; a damaged file is ignored and the defaults are used.
+
+## What an AI gets
+The pasted video is all most chats need. Next to it, `recording.md` holds the transcript plus a
+timeline of up to 36 frames with clicks ringed in red, for tools that read files.
+
+## If something goes wrong
+- **"Couldn't build the recording"**: details are in `screen-explain.log` and `process-last.log`
+  (see "Where things are").
+- **Transcript empty**: the speech model didn't download (offline or blocked on first run).
+  Recordings still work; restart Lookhere while online to fetch it.
+- **No voice**: check the mic in Settings > Microphone > Test, and on Windows that
+  Settings > Privacy & security > Microphone allows desktop apps. On a Mac, switch Lookhere on under
+  System Settings > Privacy & Security > Microphone and Screen & System Audio Recording.
+- **Shortcut does nothing**: another app owns it; pick another in Settings > Shortcuts.
+- Anything else: [open an issue](https://github.com/younggovita/lookhere/issues).
+
+## Running from source, building, releasing
+See [DEVELOPING.md](DEVELOPING.md).
+
+## Licence
+Lookhere's own code is MIT ([LICENSE](LICENSE)). The installers bundle third-party software under
+its own licences, including FFmpeg (GPL v3): every notice and licence text ships with the app
+(Start menu > Lookhere licences on Windows) and is generated by `make_licenses.py`.

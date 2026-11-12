@@ -1,7 +1,8 @@
 # Mac port: what Windows should pick up
 
-Written 2026-10-30 from the `mac-port` work. None of this has been run on Windows yet: the port
-was built and tested only on an M1 Mac.
+Written 2026-10-30 from the `mac-port` work, before it was merged. Kept as the hand-over record:
+the port has since been merged and the Windows build and self-test pass on it (version 0.3.0
+onwards). Current developer notes are in `DEVELOPING.md`.
 
 ## Already on Windows, through shared code (needs one check on the PC)
 - **Timer slot:** the pill's buttons can't shift as the timer ticks (`hud.py`).
@@ -23,7 +24,7 @@ was built and tested only on an M1 Mac.
    screen, so check first. If not, raise `Ink.SS` or draw with an anti-aliased library.
 4. **Lighter smoothing.** The Mac averages 3 points, Windows 5. Windows gets denser mouse points, so
    it may be fine; try `k = 1` in `draw.smooth` and judge by feel.
-5. **ffmpeg 8+.** `-filter_complex_script` is gone from current ffmpeg. The installer's bundled build
+5. **ffmpeg 8+.** `-filter_complex_script` is on its way out of ffmpeg (the bundled Windows build still accepts it). The installer's bundled build
    is fine until it's upgraded; then switch `process.py` to `-/filter_complex`, or the preview
    silently falls back to a slideshow on recordings with a pause.
 6. **Audio start alignment.** The Mac pads audio.wav for the mic's start-up time. The gap on Windows

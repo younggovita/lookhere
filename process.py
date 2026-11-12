@@ -1,4 +1,4 @@
-"""Turn a raw Lookhere recording folder into a bundle any AI chat (and the Claude skill) can read.
+"""Turn a raw Lookhere recording folder into a bundle any AI chat can read.
 
 Usage: process.py <recording_dir> [--max-frames N] [--keep-raw]
 
@@ -7,7 +7,7 @@ Writes into the recording folder:
   frames/        the chosen frames, cursor and clicks marked, sized for Claude
   transcript.txt plain timestamped transcript
   message.txt    the text that goes on the clipboard
-  preview.mp4    full screen video with cursor, following his cursor across monitors, with his voice,
+  preview.mp4    full screen video with cursor, following the cursor across monitors, with your voice,
                  for Claude to post in the chat (falls back to a slideshow of frames without screen video)
   preview.jpg    contact sheet of the chosen frames, same purpose
 """
@@ -68,12 +68,21 @@ def mono_audio(rec_dir):
 MODELS = ([("large-v3-turbo", "cuda", "float16")] if paths.GPU_SPEECH else []) + [("small.en", "cpu", "int8")]
 
 
-def load_model(start=0):
+def whisper_model(name, device, compute, **kw):
+    """The speech model from this computer's copy, with no network call; downloaded only if it
+    isn't here yet (first run)."""
     from faster_whisper import WhisperModel
+    try:
+        return WhisperModel(name, device=device, compute_type=compute, local_files_only=True, **kw)
+    except Exception:
+        return WhisperModel(name, device=device, compute_type=compute, **kw)
+
+
+def load_model(start=0):
     last = None
     for i, (name, device, compute) in enumerate(MODELS[start:], start=start):
         try:
-            return WhisperModel(name, device=device, compute_type=compute), i
+            return whisper_model(name, device, compute), i
         except Exception as e:
             last = e
             print("loading %s on %s failed: %r" % (name, device, e), file=sys.stderr)
@@ -82,12 +91,11 @@ def load_model(start=0):
 
 def load_models():
     """Every model in MODELS that loads: the GPU one and a small CPU one."""
-    from faster_whisper import WhisperModel
     loaded = []
     for i, (name, device, compute) in enumerate(MODELS):
         try:
             kw = {"cpu_threads": 4} if device == "cpu" else {}
-            loaded.append((WhisperModel(name, device=device, compute_type=compute, **kw), i))
+            loaded.append((whisper_model(name, device, compute, **kw), i))
         except Exception as e:
             print("loading %s on %s failed: %r" % (name, device, e), file=sys.stderr)
     return loaded
@@ -222,7 +230,7 @@ ffmpeg_exe = paths.ffmpeg_exe
 
 
 def build_preview_video(rec, meta, audio, out_path, size=(1280, 720)):
-    """Slideshow of every captured frame, timed as recorded, with his voice. Returns True on success."""
+    """Slideshow of every captured frame, timed as recorded, with the voice. Returns True on success."""
     exe = ffmpeg_exe()
     frames = meta["frames"]
     if not exe or not frames:
@@ -242,8 +250,8 @@ def build_preview_video(rec, meta, audio, out_path, size=(1280, 720)):
             canvas.save(marked, quality=85)
             start = 0.0 if i == 0 else f["t"]
             end = frames[i + 1]["t"] if i + 1 < len(frames) else meta["duration"]
-            lines.append("file '%s'\nduration %.3f" % (marked.replace("\\", "/"), max(0.05, end - start)))
-        lines.append("file '%s'" % os.path.join(tmp, "m%05d.jpg" % (len(frames) - 1)).replace("\\", "/"))
+            lines.append("file '%s'\nduration %.3f" % (concat_path(marked), max(0.05, end - start)))
+        lines.append("file '%s'" % concat_path(os.path.join(tmp, "m%05d.jpg" % (len(frames) - 1))))
         listing = os.path.join(tmp, "list.txt")
         with open(listing, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
@@ -254,11 +262,32 @@ def build_preview_video(rec, meta, audio, out_path, size=(1280, 720)):
             cmd += ["-i", voice, "-c:a", "aac", "-b:a", "64k"]
         cmd += ["-r", "10", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart", "-t", "%.2f" % meta["duration"], out_path]
-        r = subprocess.run(cmd, capture_output=True, text=True, creationflags=paths.NO_WINDOW)
-        if r.returncode != 0:
-            print("preview video failed: %s" % r.stderr[-1000:], file=sys.stderr)
+        ok, err = run_ffmpeg(cmd)
+        if not ok:
+            print("preview video failed: %s" % err[-1000:], file=sys.stderr)
             return False
     return True
+
+
+def concat_path(path):
+    """A path for ffmpeg's concat list: forward slashes, and an apostrophe (a user called O'Brien) escaped."""
+    return path.replace("\\", "/").replace("'", "'\\''")
+
+
+FFMPEG_TIMEOUT = 900  # seconds; main() raises it for long recordings
+
+
+def run_ffmpeg(cmd, timeout=None):
+    """Run ffmpeg to the end; (ok, stderr). A hung ffmpeg is killed rather than left to block the build."""
+    timeout = timeout or FFMPEG_TIMEOUT
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=paths.NO_WINDOW, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "timed out after %ds" % timeout
+    except OSError as e:
+        return False, repr(e)
+    return r.returncode == 0, r.stderr or ""
 
 
 def video_frame(exe, path, t, size=(96, 54)):
@@ -331,7 +360,7 @@ HW_CODEC = (["-c:v", "h264_videotoolbox", "-q:v", "60"] if paths.MAC
 
 
 def build_full_preview(rec, meta, audio, out_path, size=(1920, 1080), kept=None):
-    """Real screen video with the cursor, following whichever monitor the cursor is on, plus his voice."""
+    """Real screen video with the cursor, following whichever monitor the cursor is on, plus the voice."""
     exe = ffmpeg_exe()
     v = meta.get("video")
     if not exe or not v or not all(os.path.exists(os.path.join(rec, f)) for f in v["files"]):
@@ -369,18 +398,17 @@ def build_full_preview(rec, meta, audio, out_path, size=(1920, 1080), kept=None)
         script = os.path.join(tmp, "graph.txt")
         with open(script, "w", encoding="utf-8") as fh:
             fh.write(graph)
-        # ffmpeg 7+ reads an option from a file with "-/option"; 8 dropped -filter_complex_script
-        # (Homebrew's on a Mac is current; the Windows build bundles an older one)
+        # ffmpeg 7+ reads an option from a file with "-/option"; newer builds are dropping -filter_complex_script
+        # (the Windows build's ffmpeg still takes the older spelling)
         cmd += ["-/filter_complex" if paths.MAC else "-filter_complex_script", script] + maps
         no_hw = [x for x in cmd if x not in ("-hwaccel", HWACCEL)]
         for base, codec in ((cmd, HW_CODEC), (no_hw, HW_CODEC),
                             (no_hw, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"])):
-            r = subprocess.run(base + codec + ["-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                                               "-t", "%.2f" % sum(b - a for a, b in kept), out_path],
-                               capture_output=True, text=True, creationflags=paths.NO_WINDOW)
-            if r.returncode == 0:
+            ok, err = run_ffmpeg(base + codec + ["-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                                                 "-t", "%.2f" % sum(b - a for a, b in kept), out_path])
+            if ok:
                 return True
-            print("full preview with %s failed: %s" % (codec[1], r.stderr[-1500:]), file=sys.stderr)
+            print("full preview with %s failed: %s" % (codec[1], err[-1500:]), file=sys.stderr)
     return False
 
 
@@ -459,9 +487,24 @@ def stage(frac, text):
 
 
 def make_preview(rec, meta, audio, meta_out, kept):
+    """Build preview.mp4. Rendered beside it and swapped in only when it worked, so a failed
+    rebuild (the old video open in a player, say) can't leave the old one looking like the new."""
     preview = os.path.join(rec, "preview.mp4")
-    return (build_full_preview(rec, meta, audio, preview, kept=kept)
-            or build_preview_video(rec, meta_out, audio, preview))
+    tmp = os.path.join(rec, "preview.new.mp4")
+    ok = (build_full_preview(rec, meta, audio, tmp, kept=kept)
+          or build_preview_video(rec, meta_out, audio, tmp))
+    if ok:
+        try:
+            os.replace(tmp, preview)
+        except OSError as e:
+            print("couldn't replace preview.mp4 (open in another app?): %r" % e, file=sys.stderr)
+            ok = False
+    if not ok:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return ok
 
 
 # ---------- cutting pauses and trims ----------
@@ -527,10 +570,17 @@ def main():
                     help="load the speech model now, then wait for 'go' on stdin (started when recording starts)")
     ap.add_argument("--download", action="store_true", help="just fetch the speech models, then exit")
     args = ap.parse_args()
+    for stream in (sys.stdout, sys.stderr):
+        # Output goes down a pipe in the system code page; a folder name it can't encode
+        # (a username in another script) must not crash the build at the last line.
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
     if args.download:
-        load_models()
+        got = load_models()
         print("READY", flush=True)
-        return
+        sys.exit(0 if got else 1)  # nothing loaded = the download failed; the app says so
     rec = os.path.abspath(args.rec_dir)
     T = time.monotonic()
 
@@ -549,6 +599,8 @@ def main():
             edits = json.load(fh)
     except (OSError, ValueError):
         edits = {}
+    global FFMPEG_TIMEOUT
+    FFMPEG_TIMEOUT = max(900, int(6 * float(meta.get("duration") or 0)))  # an hour's recording gets six
     audio = mono_audio(rec)
     kept = kept_intervals(meta, edits)
     meta_raw = meta
@@ -559,7 +611,14 @@ def main():
         video_job = ex.submit(make_preview, rec, meta_raw, audio, meta, kept)
 
         # Transcript, as short timed phrases so speech lines up with frames
-        words, model_used = ([], "no audio") if audio is None else transcribe_race(audio, models or load_models())
+        if audio is None or not len(audio):
+            words, model_used = [], "no audio"
+        else:
+            try:
+                words, model_used = transcribe_race(audio, models or load_models())
+            except Exception as e:  # no speech model (offline first run, blocked download): still deliver the video
+                print("transcription unavailable: %r" % e, file=sys.stderr)
+                words, model_used = [], "unavailable (the speech model didn't load)"
         segments = phrases(words)
         with open(os.path.join(rec, "transcript.txt"), "w", encoding="utf-8") as fh:
             for s in segments:
@@ -653,7 +712,13 @@ def main():
     if args.drop_raw:
         shutil.rmtree(os.path.join(rec, "frames_raw"), ignore_errors=True)
     with open(os.path.join(rec, "result.json"), "w", encoding="utf-8") as fh:
-        json.dump({"duration": meta["duration"], "kept": kept, "trim": edits.get("trim")}, fh)
+        json.dump({"duration": meta["duration"], "kept": kept, "trim": edits.get("trim"),
+                   "video": bool(has_video)}, fh)
+    if not has_video:
+        # Nothing to paste: say so rather than report success with an old or missing video.
+        print("no preview video could be built", file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(3)
     stage(1.0, "Done in %.1fs" % (time.monotonic() - T))
     print("DONE %s" % md, flush=True)
     # The losing transcription may still be running in a native thread; don't wait for it.

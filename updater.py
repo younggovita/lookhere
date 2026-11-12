@@ -12,6 +12,7 @@ small shell script swaps the two and opens the new one.
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -68,25 +69,48 @@ def download(info, progress=lambda frac: None):
     """Download the installer to a temp folder and verify it. Returns the file path."""
     with _get(info["sha256_url"], accept="application/octet-stream") as r:
         expected = r.read().decode().split()[0].strip().lower()
-    folder = tempfile.mkdtemp(prefix="lookhere-update-")
+    if len(expected) != 64:
+        raise ValueError("the release's SHA-256 file is malformed")
+    clean_downloads()
+    folder = tempfile.mkdtemp(prefix=DOWNLOAD_PREFIX)
     path = os.path.join(folder, info["name"])
     h = hashlib.sha256()
-    with _get(info["installer_url"], accept="application/octet-stream") as r, open(path, "wb") as f:
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        while True:
-            chunk = r.read(1 << 16)
-            if not chunk:
-                break
-            f.write(chunk)
-            h.update(chunk)
-            done += len(chunk)
-            if total:
-                progress(done / total)
-    if h.hexdigest().lower() != expected:
-        os.remove(path)
-        raise ValueError("downloaded installer doesn't match its published SHA-256")
+    try:
+        with _get(info["installer_url"], accept="application/octet-stream") as r, open(path, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                chunk = r.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                h.update(chunk)
+                done += len(chunk)
+                if total:
+                    progress(done / total)
+        if total and done != total:
+            raise ValueError("the download was cut short")
+        if h.hexdigest().lower() != expected:
+            raise ValueError("downloaded installer doesn't match its published SHA-256")
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)  # never leave a partial or unverified installer behind
+        raise
     return path
+
+
+DOWNLOAD_PREFIX = "lookhere-update-"
+
+
+def clean_downloads():
+    """Remove installers left in the temp folder by earlier updates (about 130 MB each)."""
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith(DOWNLOAD_PREFIX):
+            shutil.rmtree(os.path.join(tmp, name), ignore_errors=True)
 
 
 def install(path):
@@ -94,7 +118,8 @@ def install(path):
     Mac: stage the new app and return; the caller quits Lookhere, then the swap happens."""
     if paths.MAC:
         return _install_mac(path)
-    subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE=1"],
+    # No /SUPPRESSMSGBOXES: if the install fails, the installer says why instead of Lookhere just vanishing.
+    subprocess.Popen([path, "/SILENT", "/NORESTART", "/UPDATE=1"],
                      creationflags=0x00000008 | 0x00000200)  # DETACHED_PROCESS | NEW_PROCESS_GROUP
 
 
@@ -103,6 +128,7 @@ def install(path):
 _SWAP = r"""
 pid="$1"; app="$2"; new="$3"
 i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.2; i=$((i+1)); done
+if kill -0 "$pid" 2>/dev/null; then echo "Lookhere is still running; update not applied"; rm -rf "$new"; exit 1; fi
 tmp="$(mktemp -d)"
 if mv "$app" "$tmp/Lookhere.app"; then
   mv "$new" "$app" || mv "$tmp/Lookhere.app" "$app"
@@ -119,15 +145,22 @@ def _install_mac(dmg):
         raise ValueError("Move Lookhere into Applications first, then update")
     staged = os.path.join(os.path.dirname(app), ".Lookhere-update.app")
     mount = tempfile.mkdtemp(prefix="lookhere-dmg-")
-    subprocess.run(["hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount, dmg],
-                   check=True, capture_output=True)
+    try:
+        subprocess.run(["hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount, dmg],
+                       check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        raise ValueError("Couldn't open the downloaded update")
     try:
         subprocess.run(["rm", "-rf", staged], check=True)
         try:
             subprocess.run(["ditto", os.path.join(mount, "Lookhere.app"), staged], check=True, capture_output=True)
         except subprocess.CalledProcessError:
             raise ValueError("Can't write to %s" % os.path.dirname(app))
-        subprocess.run(["codesign", "--verify", "--deep", staged], check=True, capture_output=True)
+        try:
+            subprocess.run(["codesign", "--verify", "--deep", staged], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(["rm", "-rf", staged])
+            raise ValueError("The downloaded update is damaged")
     finally:
         subprocess.run(["hdiutil", "detach", mount, "-quiet"])
     log = open(os.path.join(paths.DATA, "update.log"), "a")

@@ -33,6 +33,10 @@ Source: "{#AppSrc}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cre
 ; third-party licences (ffmpeg is GPL v3): see licenses\THIRD-PARTY-NOTICES.txt
 Source: "{#LicSrc}\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
+[InstallDelete]
+; libraries from the previous version (their file names change between versions, so they'd pile up)
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Icons]
 Name: "{group}\Lookhere"; Filename: "{app}\Lookhere.exe"
 Name: "{group}\Lookhere licences"; Filename: "{app}\licenses\THIRD-PARTY-NOTICES.txt"
@@ -41,6 +45,8 @@ Name: "{userdesktop}\Lookhere"; Filename: "{app}\Lookhere.exe"; Tasks: desktopic
 [Registry]
 ; same value the app's "Start with Windows" tray toggle reads and writes
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Lookhere"; ValueData: """{app}\Lookhere.exe"""; Tasks: autostart; Flags: uninsdeletevalue; Check: not IsUpdate
+; "Start with Windows" switched on later from the app's Settings is removed on uninstall as well
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Lookhere"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
 Filename: "{app}\Lookhere.exe"; Description: "Start Lookhere now"; Flags: nowait postinstall skipifsilent
@@ -71,5 +77,9 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
     StopRunningApp();
+    { "Start with Windows" may have been switched on from the app's Settings after installing }
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Lookhere');
+  end;
 end;

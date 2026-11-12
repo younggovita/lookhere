@@ -23,6 +23,12 @@ if paths.MAC:
     import mac
 
 _win = None
+_rebuilding = set()  # recording folders with a trim rebuild running: no second trim or delete meanwhile
+
+
+def _log(msg):
+    import screen_explain
+    screen_explain.log(msg)
 
 
 def hexc(rgb):
@@ -31,7 +37,8 @@ def hexc(rgb):
 
 def duration_of(path):
     """Seconds of a video, read from ffmpeg's header line (ffprobe isn't bundled)."""
-    r = subprocess.run([paths.ffmpeg_exe(), "-i", path], capture_output=True, text=True, creationflags=paths.NO_WINDOW)
+    r = subprocess.run([paths.ffmpeg_exe(), "-i", path], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", creationflags=paths.NO_WINDOW)
     m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", r.stderr)
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
 
@@ -71,13 +78,17 @@ def recycle(path):
         _fields_ = [("hwnd", wt.HWND), ("wFunc", wt.UINT), ("pFrom", wt.LPCWSTR), ("pTo", wt.LPCWSTR),
                     ("fFlags", ctypes.c_uint16), ("fAnyOperationsAborted", wt.BOOL),
                     ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wt.LPCWSTR)]
-    op = SHFILEOPSTRUCTW(None, 3, os.path.abspath(path) + "\0", None, 0x0040 | 0x0010 | 0x0004 | 0x0400, False,
-                         None, None)  # FO_DELETE; ALLOWUNDO | NOCONFIRMATION | SILENT | NOERRORUI
-    return ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op)) == 0
+    # FO_DELETE; ALLOWUNDO | NOCONFIRMATION | SILENT | NOERRORUI | WANTNUKEWARNING (a folder too big
+    # for the Recycle Bin is refused, never deleted for good)
+    op = SHFILEOPSTRUCTW(None, 3, os.path.abspath(path) + "\0", None,
+                         0x0040 | 0x0010 | 0x0004 | 0x0400 | 0x4000, False, None, None)
+    return ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op)) == 0 and not op.fAnyOperationsAborted
 
 
 def list_recordings(root):
     out = []
+    if not os.path.isdir(root):
+        return out
     for name in sorted(os.listdir(root), reverse=True):
         d = os.path.join(root, name)
         if not os.path.exists(os.path.join(d, "preview.mp4")):
@@ -90,12 +101,12 @@ def list_recordings(root):
         try:
             with open(os.path.join(d, "transcript.txt"), encoding="utf-8") as f:
                 said = " ".join(l.split("] ", 1)[-1].strip() for l in f)[:110]
-        except OSError:
+        except (OSError, ValueError):
             pass
         try:
             with open(os.path.join(d, "result.json"), encoding="utf-8") as f:
-                length = json.load(f)["duration"]
-        except (OSError, ValueError, KeyError):
+                length = float(json.load(f)["duration"])
+        except (OSError, ValueError, KeyError, TypeError):
             length = None
         out.append(dict(dir=d, when=when, said=said, length=length))
     return out
@@ -103,8 +114,11 @@ def list_recordings(root):
 
 def thumbnail(d, size=(176, 99), card=(24, 24, 28)):
     frames = os.path.join(d, "frames")
-    first = sorted(os.listdir(frames))[0] if os.path.isdir(frames) and os.listdir(frames) else None
-    img = Image.open(os.path.join(frames, first)).convert("RGB") if first else Image.new("RGB", size, (60, 60, 60))
+    try:  # the first picture; anything else in there (.DS_Store, a half-written file) is skipped
+        first = sorted(n for n in os.listdir(frames) if n.lower().endswith(".jpg"))[0]
+        img = Image.open(os.path.join(frames, first)).convert("RGB")
+    except Exception:
+        img = Image.new("RGB", size, (60, 60, 60))
     S = 3
     big = img.resize((size[0] * S, size[1] * S), Image.LANCZOS)
     mask = Image.new("L", big.size, 0)
@@ -264,7 +278,11 @@ class HistoryWindow:
 
     def _wheel(self, e):
         if self.top.winfo_exists():
-            self.canvas.yview_scroll(int(-e.delta / 120), "units")
+            # Windows sends 120 per notch; a Mac sends small numbers (often 1)
+            if not e.delta:
+                return
+            step = -e.delta if paths.MAC else -e.delta / 120
+            self.canvas.yview_scroll(int(step) or (1 if step > 0 else -1), "units")
 
     def _resized(self, e):
         self.canvas.itemconfigure(self.list_id, width=e.width - 10)
@@ -290,7 +308,10 @@ class HistoryWindow:
         if not recs:
             self._empty()
         for r in recs:
-            self._card(r)
+            try:
+                self._card(r)
+            except Exception as e:  # one odd folder must not hide the rest
+                _log("history: couldn't show %s: %r" % (r["dir"], e))
 
     def _empty(self):
         p = self.p
@@ -349,7 +370,9 @@ class HistoryWindow:
     def _delete(self, r, button):
         """First click arms the button (it turns red: "Delete?"); a second click within 3 s deletes."""
         if getattr(button, "armed", False):
-            recycle(r["dir"])
+            if r["dir"] in _rebuilding or not recycle(r["dir"]):
+                self.app.hud.show("error", "Couldn't delete that recording",
+                                  "It's open in another app, or too big for the bin", hold=4)
             self.refresh()
             return
         button.armed = True
@@ -509,20 +532,41 @@ class TrimWindow:
         s, e = self.start.get(), self.end.get()
         old = self.edits.get("trim")
         base = old[0] if old else 0.0  # handles are on the current (maybe already trimmed) video
+        if self.dir in _rebuilding:
+            return
         self._write_edits([round(base + s, 2), round(base + e, 2)])
-        self._rebuild()
+        self._rebuild(old)
 
     def _reset(self):
+        if self.dir in _rebuilding:
+            return
+        old = self.edits.get("trim")
         self._write_edits(None)
-        self._rebuild()
+        self._rebuild(old)
 
-    def _rebuild(self):
+    def _rebuild(self, previous):
+        """Rebuild with the new trim. If that fails, the old trim goes back, so the card never
+        says "trimmed" over a video that wasn't."""
         self.status.configure(text="Rebuilding the recording...")
-        app = self.h.app
+        app, rec = self.h.app, self.dir
+        _rebuilding.add(rec)
 
         def work():
-            p = subprocess.run(paths.worker_cmd(self.dir), capture_output=True, text=True,
-                               creationflags=paths.NO_WINDOW)
-            app.events.put(("trimmed", self.dir, p.returncode == 0))
+            ok = False
+            try:
+                p = subprocess.run(paths.worker_cmd(rec), capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", creationflags=paths.NO_WINDOW, timeout=1800)
+                ok = p.returncode == 0
+                if not ok:
+                    _log("trim rebuild failed (%s): %s" % (p.returncode, (p.stderr or "")[-1500:]))
+            except Exception as e:
+                _log("trim rebuild failed: %r" % e)
+            if not ok:
+                try:
+                    self._write_edits(previous)
+                except OSError as e:
+                    _log("couldn't put the old trim back: %r" % e)
+            _rebuilding.discard(rec)
+            app.events.put(("trimmed", rec, ok))
         threading.Thread(target=work, daemon=True).start()
         self.top.after(300, self.top.destroy)

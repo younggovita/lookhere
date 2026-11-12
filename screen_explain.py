@@ -1,4 +1,4 @@
-"""Lookhere (tools/screen-explain): press a hotkey, talk through a problem on screen, press it again,
+"""Lookhere: press a hotkey, talk through a problem on screen, press it again,
 and get a bundle (transcript + key frames + click log) ready to paste into any AI chat.
 
 Runs as a tray app. Hotkey toggles recording. On stop, process.py builds the bundle,
@@ -50,6 +50,9 @@ from hud import Hud
 # Words that differ between the two systems, for the pill and the menu.
 OS_NAME = "macOS" if paths.MAC else "Windows"
 PASTE_KEYS = "Cmd+V" if paths.MAC else "Ctrl+V"
+BUILD_TIMEOUT = 900  # seconds without a word from the build before it's treated as hung
+# Shortcuts nobody should lose to a recorder: copy, paste, cut, undo, select all, save...
+RESERVED_KEYS = set("cvxzasfpntwqy")
 MENU_HINT = "Click the menu bar icon" if paths.MAC else "Right-click the tray icon"
 MIC_DEFAULT = "System default" if paths.MAC else "Windows default"
 THEME_AUTO = "System" if paths.MAC else "Follow Windows"
@@ -59,8 +62,8 @@ AUTOSTART_TEXT = (("Open at login", "Opens at login", "Won't open at login") if 
 HERE = paths.DATA  # recordings, logs and config.json (next to the code when run from source)
 CONFIG = {
     "pause_hotkey": "<ctrl>+<alt>+p",
-    "draw_hotkey": "<ctrl>+<alt>+m",  # M for mark (Ctrl+Alt+D is taken on this PC)
-    "hotkey": "<ctrl>+<alt>+h",  # H for here. Not Ctrl+Alt+R (renames Claude sessions) or Ctrl+Alt+L (taken on this PC)
+    "draw_hotkey": "<ctrl>+<alt>+m",  # M for mark
+    "hotkey": "<ctrl>+<alt>+h",  # H for here (Ctrl+Alt+R and Ctrl+Alt+L are commonly taken by other apps)
     "recordings_dir": os.path.join(HERE, "recordings"),
     "check_interval": 0.5,      # seconds between screen checks
     "periodic_every": 5.0,      # keep a frame at least this often
@@ -80,10 +83,23 @@ CONFIG = {
     "theme": "auto",            # auto = white or black pill following Windows light/dark; or "dark" / "light"
     "video_encoder": "auto",    # auto picks the first that works: NVIDIA, AMD, Intel, then Windows' own
 }
+DEFAULT_KEYS = {k: CONFIG[k] for k in ("hotkey", "pause_hotkey", "draw_hotkey")}
 _cfg_path = os.path.join(HERE, "config.json")
+if __name__ == "__main__":
+    # Other modules reach this one with `import screen_explain`; give them this running copy,
+    # not a second one with its own settings.
+    sys.modules.setdefault("screen_explain", sys.modules["__main__"])
+
+_cfg_error = None
 if os.path.exists(_cfg_path):
-    with open(_cfg_path, encoding="utf-8") as f:
-        CONFIG.update(json.load(f))
+    try:
+        with open(_cfg_path, encoding="utf-8") as f:
+            _saved = json.load(f)
+        if not isinstance(_saved, dict):
+            raise ValueError("not a JSON object")
+        CONFIG.update(_saved)
+    except (OSError, ValueError) as e:  # half-written or hand-edited badly: run on the defaults
+        _cfg_error = repr(e)
 
 if not paths.MAC:
     user32 = ctypes.windll.user32
@@ -91,10 +107,23 @@ if not paths.MAC:
 LOG_PATH = os.path.join(HERE, "screen-explain.log")
 
 
+LOG_MAX = 2_000_000  # bytes; the log starts again past this (one older copy is kept)
+
+
 def log(msg):
+    """Append to the log. Never raises: a full disk must not take the app down with it."""
     line = "%s %s\n" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg)
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(line)
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > LOG_MAX:
+            os.replace(LOG_PATH, LOG_PATH + ".old")
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+if _cfg_error:
+    log("config.json unreadable, using the defaults: %s" % _cfg_error)
 
 
 def cursor_pos():
@@ -231,6 +260,10 @@ class ScreenVideo:
             self.proc.wait(timeout=10)
         except Exception:
             self.proc.kill()
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
         return self.proc.returncode
 
 
@@ -351,9 +384,13 @@ def save_setting(key, value):
             data = json.load(f)
     except (OSError, ValueError):
         data = {}
+    if not isinstance(data, dict):
+        data = {}
     data[key] = value
-    with open(_cfg_path, "w", encoding="utf-8") as f:
+    tmp = _cfg_path + ".tmp"  # written beside it, then swapped in: a crash can't leave half a file
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp, _cfg_path)
     CONFIG[key] = value
 
 
@@ -387,10 +424,25 @@ class ShortcutCapture:
         name = mac.key_name(vk)
         if name == "esc":
             self._finish(("capture_cancelled", "esc"))
-        elif name and not mods and not name.startswith("f"):
-            self.report(("capture_hint", "Add Ctrl, Option, Shift or Cmd to %s" % name.upper()))
         elif name:
-            self._finish(("captured", "+".join(["<%s>" % m for m in ("ctrl", "alt", "shift", "cmd") if m in mods] + [name])))
+            mods = [m for m in ("ctrl", "alt", "shift", "cmd") if m in mods]
+            hint = self.refuse(name, mods)
+            if hint:
+                self.report(("capture_hint", hint))
+            else:
+                self._finish(("captured", "+".join(["<%s>" % m for m in mods] + [name])))
+
+    @staticmethod
+    def refuse(main, mods):
+        """Why this combination can't be a shortcut (it would take a key you type with, or a
+        standard shortcut, away from every app), or None if it's fine."""
+        fkey = main.startswith("f") and main[1:].isdigit()
+        strong = [m for m in mods if m != "shift"]
+        if not fkey and not strong:
+            return "Add %s to %s" % ("Ctrl, Option or Cmd" if paths.MAC else "Ctrl, Alt or Win", main.upper())
+        if not fkey and len(mods) == 1 and mods[0] in ("ctrl", "cmd") and main in RESERVED_KEYS:
+            return "%s is a standard shortcut · try another" % hotkey_label("<%s>+%s" % (mods[0], main))
+        return None
 
     def _release(self, key):
         name = getattr(key, "name", None)
@@ -417,9 +469,9 @@ class ShortcutCapture:
         else:
             return  # arrows, Enter etc. aren't offered as shortcuts
         mods = [m for m in ("ctrl", "alt", "shift", "cmd") if m in self.held]
-        if not mods and not main.startswith("f"):
-            self.report(("capture_hint", "Add %s to %s" % ("Ctrl, Option, Shift or Cmd" if paths.MAC
-                                                         else "Ctrl, Alt, Shift or Win", main.upper())))
+        hint = self.refuse(main, mods)
+        if hint:
+            self.report(("capture_hint", hint))
             return
         self._finish(("captured", "+".join(["<%s>" % m for m in mods] + [main])))
 
@@ -448,7 +500,20 @@ class Recorder:
         self.started_at = datetime.now()
         self.t0 = time.monotonic()
         self.active = True
+        self.video = self.stream = self.audio_file = None
+        self.audio_thread = self.capture_thread = self.mouse_listener = None
+        self.no_mic = self.audio_dead = False
+        try:
+            self._begin()
+        except BaseException:
+            # Never leave a screen recorder or an open mic behind a start that failed.
+            try:
+                self.cancel()
+            except Exception as e:
+                log("cleanup after a failed start: %r" % e)
+            raise
 
+    def _begin(self):
         # Screen video takes ~1-2s to warm up ("arming"). Voice, clicks and frames record from now,
         # so nothing said in that time is lost; the preview holds the first video frame until then.
         self.video = None
@@ -460,19 +525,27 @@ class Recorder:
             log("screen video unavailable, preview will be a slideshow: %r" % e)
 
         # Audio: default input device, all its channels (process.py picks the loudest).
-        dev_index, dev = pick_input(CONFIG["mic"])
-        self.samplerate = int(dev["default_samplerate"])
-        channels = max(1, min(2, int(dev["max_input_channels"])))
+        # No usable microphone (none plugged in, access switched off, in use) = a silent recording,
+        # not a failed one.
         self.audio_q = queue.Queue()
-        self.audio_file = sf.SoundFile(os.path.join(self.dir, "audio.wav"), mode="w",
-                                       samplerate=self.samplerate, channels=channels, subtype="PCM_16")
-        self.mic_name = dev["name"]
-        self.stream = input_stream(dev_index, self.samplerate, channels, self._on_audio)
-        if paths.MAC:  # the mic process takes a moment to start: keep audio.wav aligned with t0
+        self.samplerate, self.mic_name = 48000, "none"
+        try:
+            dev_index, dev = pick_input(CONFIG["mic"])
+            self.samplerate = int(dev["default_samplerate"])
+            channels = max(1, min(2, int(dev["max_input_channels"])))
+            self.stream = input_stream(dev_index, self.samplerate, channels, self._on_audio)
+            self.audio_file = sf.SoundFile(os.path.join(self.dir, "audio.wav"), mode="w",
+                                           samplerate=self.samplerate, channels=channels, subtype="PCM_16")
+            self.mic_name = dev["name"]
+            # Opening the mic takes a moment (a Bluetooth headset, seconds): keep audio.wav aligned with t0.
             self.audio_q.put(np.zeros((int((time.monotonic() - self.t0) * self.samplerate), channels), np.float32))
-        self.audio_thread = threading.Thread(target=self._audio_writer, daemon=True)
-        self.audio_thread.start()
-        self.stream.start()
+            self.audio_thread = threading.Thread(target=self._audio_writer, daemon=True)
+            self.audio_thread.start()
+            self.stream.start()
+        except Exception as e:
+            log("no microphone, recording without voice: %r" % e)
+            self.no_mic = True
+            self._close_audio()
 
         self.mouse_listener = mouse.Listener(on_click=self._on_click)
         self.mouse_listener.start()
@@ -512,6 +585,8 @@ class Recorder:
         return self.video is None or self.video.start_mono is not None or self.video.ended()
 
     def _on_audio(self, data, *_):
+        if self.audio_dead:
+            return
         if self.paused:  # keep the timeline intact, record nothing
             self.audio_q.put(np.zeros_like(data))
             self.level = 0.0
@@ -520,11 +595,16 @@ class Recorder:
         self.level = level_of(data)
 
     def _audio_writer(self):
-        while not (self.stop_flag.is_set() and self.audio_q.empty()):
+        audio_file = self.audio_file
+        while not ((self.stop_flag.is_set() or self.no_mic) and self.audio_q.empty()):
             try:
-                self.audio_file.write(self.audio_q.get(timeout=0.2))
+                audio_file.write(self.audio_q.get(timeout=0.2))
             except queue.Empty:
                 pass
+            except Exception as e:  # disk full: stop writing sound, keep the rest of the recording
+                log("audio write failed, the rest has no voice: %r" % e)
+                self.audio_dead = True
+                return
 
     def _on_click(self, x, y, button, pressed):
         if not pressed or not self.active or self.paused or self.drawing or self.ignore(x, y):
@@ -543,6 +623,7 @@ class Recorder:
         pending_after = []
         next_check = 0.0
         next_track = 0.0
+        grab_failed = False
         while not self.stop_flag.is_set():
             try:
                 kind, due, click = self.requests.get(timeout=0.03)
@@ -575,10 +656,19 @@ class Recorder:
             cx, cy = cursor_pos()
             if click:
                 cx, cy = click["x"], click["y"]
-            mon_idx = monitor_for(sct.monitors, cx, cy)
-            mon = sct.monitors[mon_idx]
-            shot = sct.grab(mon)
-            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            try:
+                mon_idx = monitor_for(sct.monitors, cx, cy)
+                mon = sct.monitors[mon_idx]
+                shot = sct.grab(mon)
+                img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            except Exception as e:
+                # Windows refuses while a UAC prompt or the lock screen is up; carry on afterwards.
+                if not grab_failed:
+                    log("screen grab failed, will keep trying: %r" % e)
+                grab_failed = True
+                next_check = now + 0.5
+                continue
+            grab_failed = False
             th = thumb(img)
             diff = changed_pct(th, last_thumb)
 
@@ -608,7 +698,12 @@ class Recorder:
             else:
                 scale = 1.0
             name = "f%05d_%s.jpg" % (len(self.frames), reason)
-            img.save(os.path.join(self.raw_dir, name), quality=85)
+            try:
+                img.save(os.path.join(self.raw_dir, name), quality=85)
+            except OSError as e:
+                log("couldn't save a frame: %r" % e)
+                next_check = now + 1.0
+                continue
             self.frames.append({
                 "file": name, "t": round(now, 2), "kind": reason, "monitor": mon_idx,
                 "cursor": [round((cx - mon["left"]) * scale), round((cy - mon["top"]) * scale)],
@@ -618,22 +713,50 @@ class Recorder:
             })
             last_thumb, last_saved_t, last_saved_pos = th, now, (cx, cy)
 
+    def _close_audio(self):
+        """Stop the mic and finish audio.wav. Safe when some or all of it never started."""
+        stream, self.stream = self.stream, None
+        if stream is not None:
+            for step in (stream.stop, stream.close):
+                try:
+                    step()
+                except Exception as e:
+                    log("closing the mic: %r" % e)
+        if self.audio_thread is not None:  # ends once stop_flag (or no_mic) is set and the queue is empty
+            self.audio_thread.join(timeout=5)
+            self.audio_thread = None
+        audio_file, self.audio_file = self.audio_file, None
+        if audio_file is not None:
+            try:
+                audio_file.close()
+            except Exception as e:
+                log("closing audio.wav: %r" % e)
+        if self.no_mic:  # a header with no sound in it would only confuse the build
+            try:
+                os.remove(os.path.join(self.dir, "audio.wav"))
+            except OSError:
+                pass
+
     def _halt(self):
         self.active = False
-        self.mouse_listener.stop()
-        self.stream.stop()
-        self.stream.close()
+        if self.mouse_listener is not None:
+            self.mouse_listener.stop()
+            self.mouse_listener = None
         self.stop_flag.set()
-        self.capture_thread.join(timeout=5)
-        self.audio_thread.join(timeout=5)
-        self.audio_file.close()
+        if self.capture_thread is not None:
+            self.capture_thread.join(timeout=5)
+            self.capture_thread = None
+        self._close_audio()
 
     def cancel(self):
         """Stop everything and delete the recording."""
-        self._halt()
-        if self.video:
-            self.video.stop()
-        shutil.rmtree(self.dir, ignore_errors=True)
+        try:
+            self._halt()
+        finally:
+            video, self.video = self.video, None
+            if video:
+                video.stop()
+            shutil.rmtree(self.dir, ignore_errors=True)
         log("recording cancelled after %.1fs" % self.elapsed())
 
     def stop(self):
@@ -982,6 +1105,10 @@ class App:
 
         self.root = tk.Tk()
         self.root.withdraw()
+        if not paths.MAC:
+            # The windows are laid out in pixels; keep text in step at 125-200% display scaling
+            # instead of letting it outgrow its rows.
+            self.root.tk.call("tk", "scaling", 96 / 72)
         if paths.MAC:
             mac.menu_bar_app()
         # Errors in Tk callbacks would otherwise vanish (pythonw has no console).
@@ -994,11 +1121,20 @@ class App:
             log("could not hide the overlay from capture; it may show in recordings")
 
         hk = CONFIG["hotkey"]
-        self.keys = {name: SystemHotkey(CONFIG[name], (lambda ev: lambda: self.events.put(ev))(ev))
-                     for name, ev in self.KEY_EVENTS.items()}
+        self.keys = {}
+        for name, ev in self.KEY_EVENTS.items():
+            on_press = (lambda ev: lambda: self.events.put(ev))(ev)
+            try:
+                self.keys[name] = SystemHotkey(CONFIG[name], on_press)
+            except Exception as e:  # config.json edited by hand into something unreadable
+                log("%s %r can't be used (%r), using %s" % (name, CONFIG[name], e, DEFAULT_KEYS[name]))
+                CONFIG[name] = DEFAULT_KEYS[name]
+                self.keys[name] = SystemHotkey(CONFIG[name], on_press)
         self.hotkeys = self.keys["hotkey"]
         self.esc_listener = None
         self.capture = None
+        self._captured_at = 0.0
+        self._build_heard = 0.0
         self.capture_target = "hotkey"
         self.update_info = None
         self.drawer = None
@@ -1095,7 +1231,11 @@ class App:
                 try:
                     self._handle(ev)
                 except Exception as e:
-                    log("error handling %r: %r" % (ev, e))
+                    log("error handling %r: %r\n%s" % (ev, e, traceback.format_exc()))
+                    if self.state == "recording" and ev not in ("toggle", "pause", "draw", "cancel") \
+                            and self.recorder.active:
+                        continue  # a side action failed (History, Settings...): keep recording
+                    self._abandon_recording()
                     self._reset()
                     self.hud.show("error", "Something went wrong", str(e)[:60], hold=4)
         except queue.Empty:
@@ -1103,6 +1243,16 @@ class App:
         if CONFIG["theme"] == "auto" and time.monotonic() - getattr(self, "_theme_checked", 0) > 2:
             self._theme_checked = time.monotonic()
             self._apply_themes()  # picks up a Windows light/dark switch within a couple of seconds
+        limit = max(BUILD_TIMEOUT, 6 * getattr(self, "duration", 0))  # long recordings take longer to build
+        if self.state == "processing" and time.monotonic() - self._build_heard > limit:
+            log("build made no progress for %ds, giving up" % limit)
+            worker, rec_dir = self.worker, self.recorder.dir
+            if worker:
+                try:
+                    worker.proc.kill()
+                except Exception:
+                    pass
+            self.finish(rec_dir, False)
         if self.state == "recording":
             r = self.recorder
             s = int(r.active_elapsed())
@@ -1116,11 +1266,13 @@ class App:
             elif r.drawing:
                 self.hud.show("draw", "Drawing", right=timer)
             elif r.armed:
-                self.hud.show("recording", "Recording", right=timer)
+                self.hud.show("recording", "Recording, no mic" if r.no_mic else "Recording", right=timer)
             else:
                 self.hud.show("arming", "Starting")
 
     def _handle(self, ev):
+        if ev in ("toggle", "pause", "draw") and (self.capture or time.monotonic() - self._captured_at < 0.5):
+            return  # that press was for the shortcut recorder, not a command
         if ev == "toggle":
             if self.state == "idle":
                 self.start()
@@ -1150,7 +1302,10 @@ class App:
         elif isinstance(ev, tuple) and ev[0] == "update_failed":
             self.hud.show("error", "Couldn't update", ev[1][:60], hold=6)
         elif ev == "install_update":
-            if self.state == "idle" and self.update_info:
+            import history
+            if history._rebuilding:  # the installer closes every Lookhere process, a trim rebuild included
+                self.hud.show("error", "A trim is still being saved", "Update again in a moment", hold=4)
+            elif self.state == "idle" and self.update_info:
                 self.state = "updating"
                 threading.Thread(target=self._install_update, daemon=True).start()
         elif isinstance(ev, tuple) and ev[0] == "update_progress":
@@ -1166,7 +1321,7 @@ class App:
             if ok:
                 self.copy_recording(rec_dir, "Trimmed and copied")
             else:
-                self.hud.show("error", "Couldn't trim that recording", "See process-last.log", hold=5)
+                self.hud.show("error", "Couldn't trim that recording", "Nothing was changed", hold=5)
             import history
             if history._win is not None:
                 history._win.refresh()
@@ -1250,6 +1405,23 @@ class App:
             self.esc_listener.start()
         self.hud.show("arming", "Starting")
 
+    def _abandon_recording(self):
+        """After an unexpected error: if a recording is live, stop and discard it, so nothing keeps
+        recording behind a pill that says idle."""
+        if not self.recorder.active:
+            return
+        for step in (self._stop_esc, lambda: self.worker and self.worker.cancel(), self.recorder.cancel):
+            try:
+                step()
+            except Exception as e:
+                log("abandoning the recording: %r" % e)
+        self.worker = None
+        if self.drawer and self.recorder.drawing:
+            try:
+                self.toggle_draw()
+            except Exception:
+                pass
+
     def _stop_esc(self):
         self.hud.pen_button = self.hud.pen_on = False
         if getattr(self, "pill_listener", None):
@@ -1264,6 +1436,7 @@ class App:
         if self.recorder.drawing:
             self.toggle_draw()
         self.state = "processing"
+        self._build_heard = time.monotonic()
         self._set_tray(BUSY)
         self.duration = self.recorder.elapsed()
         self.hud.show("processing", "Building your recording", "Saving the recording", progress=0.03)
@@ -1312,17 +1485,23 @@ class App:
         self.hud.show("processing", "Getting Lookhere ready", "Downloading the speech model (one time, ~460 MB)",
                       progress=None)
         p = subprocess.run(paths.worker_cmd("-", ["--download"]), capture_output=True, text=True,
-                           creationflags=paths.NO_WINDOW)
+                           encoding="utf-8", errors="replace", creationflags=paths.NO_WINDOW)
         if p.returncode == 0:
             self.hud.show("done", "Lookhere is ready", "Press %s to record" % self.hotkey_label, hold=4)
         else:
             log("model download failed: %s" % p.stderr[-1500:])
-            self.hud.show("error", "Couldn't download the speech model", "Check your internet, then restart Lookhere", hold=6)
+            self.hud.show("error", "Couldn't download the speech model",
+                          "Recordings still work, without a transcript. Restart Lookhere to retry", hold=7)
 
     # ---------- microphone ----------
     def test_mic(self, seconds=4):
         """Listen for a few seconds with a live meter so you can see the mic is working."""
-        idx, dev = pick_input(CONFIG["mic"])
+        try:
+            idx, dev = pick_input(CONFIG["mic"])
+        except Exception as e:
+            log("mic test: no microphone: %r" % e)
+            self.hud.show("error", "No microphone found", "Plug one in, or check your sound settings", hold=4)
+            return
         name = dev["name"]
         self.state = "mictest"
         self.hud.show("mic", "Testing your mic", "Say something \u00b7 %s" % name[:40])
@@ -1440,6 +1619,7 @@ class App:
             self.hud.show("keys", "Press your new %s shortcut" % self.KEY_TITLES[target], value)
             return
         self.capture = None
+        self._captured_at = time.monotonic()
         if kind == "capture_cancelled":
             self.hud.show("cancelled", "Shortcut unchanged", "Still %s" % self.label(target), hold=2.5)
             return
@@ -1480,6 +1660,13 @@ class App:
 
     def toggle_draw(self):
         import draw
+        if self.drawer is not None and not self.recorder.drawing:
+            try:  # a monitor was plugged in, removed or resized since the overlay was made: remake it
+                if [s.mon for s in self.drawer.screens] != draw.monitors():
+                    self.drawer.close()
+                    self.drawer = None
+            except Exception as e:
+                log("checking monitors for drawing: %r" % e)
         if self.drawer is None:
             self.drawer = draw.DrawLayer(on_stroke=lambda: self.recorder.mark("draw"), on_error=log,
                                          blocked=self.on_pill)
@@ -1523,9 +1710,18 @@ class App:
 
     def _update_loop(self):
         time.sleep(20)
-        while CONFIG["check_updates"]:
-            self._check_update()
-            time.sleep(6 * 3600)
+        try:
+            import updater
+            if self.state != "updating":
+                updater.clean_downloads()  # the installer that brought this version in
+        except Exception as e:
+            log("clearing old update downloads: %r" % e)
+        last = None
+        while True:  # follows the setting: switching it back on resumes checks without a restart
+            if CONFIG["check_updates"] and (last is None or time.monotonic() - last >= 6 * 3600):
+                last = time.monotonic()
+                self._check_update()
+            time.sleep(60)
 
     def _install_update(self):
         import updater
@@ -1537,27 +1733,51 @@ class App:
             updater.install(path)  # the installer closes this app and starts the new one
             if paths.MAC:  # Mac: the new app is staged; it's swapped in and opened once this one quits
                 self.events.put("quit")
+                return
+            time.sleep(180)  # still here = the installer never got as far as closing us
+            log("update: the installer didn't finish")
+            self.state = "idle"
+            self.events.put(("update_failed", "The installer didn't finish. Try again later"))
         except Exception as e:
             log("update failed: %r" % e)
             self.state = "idle"
             self.events.put(("update_failed", str(e)))
 
+    def _to_clipboard(self, rec_dir):
+        """Put a finished recording's video (and its fallback text) on the clipboard. True if it's there."""
+        video = os.path.join(rec_dir, "preview.mp4")
+        if not os.path.exists(video):
+            return False
+        try:
+            with open(os.path.join(rec_dir, "message.txt"), encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            text = "I made a screen recording to show you what I mean."
+        return set_clipboard(text, [video]) is not False
+
+    def _clipboard_busy(self):
+        self.hud.show("error", "Couldn't reach the clipboard", "Another app is using it. Copy it again from History",
+                      hold=5)
+
     def copy_recording(self, rec_dir, title="Recording is on your clipboard"):
-        with open(os.path.join(rec_dir, "message.txt"), encoding="utf-8") as f:
-            set_clipboard(f.read(), [os.path.join(rec_dir, "preview.mp4")])
+        if not self._to_clipboard(rec_dir):
+            log("copy failed %s" % rec_dir)
+            return self._clipboard_busy()
         self.hud.show("done", title, "Paste it into any chat with %s" % PASTE_KEYS, hold=3)
         log("copied %s" % rec_dir)
 
     def recopy(self):
         """Put the newest finished recording back on the clipboard."""
         root = CONFIG["recordings_dir"]
-        done = sorted(n for n in os.listdir(root) if os.path.exists(os.path.join(root, n, "notes.txt")))
+        done = sorted(n for n in (os.listdir(root) if os.path.isdir(root) else [])
+                      if os.path.exists(os.path.join(root, n, "preview.mp4")))
         if not done:
             self.hud.show("error", "No finished recording yet", "Record one with %s" % self.hotkey_label, hold=3)
             return
         d = os.path.join(root, done[-1])
-        with open(os.path.join(d, "message.txt"), encoding="utf-8") as f:
-            set_clipboard(f.read(), [os.path.join(d, "preview.mp4")])
+        if not self._to_clipboard(d):
+            log("recopy failed %s" % d)
+            return self._clipboard_busy()
         self.hud.show("done", "Recording is on your clipboard", "Copied the last one again (%s)" % done[-1][11:], hold=3)
         log("recopied %s" % d)
 
@@ -1568,6 +1788,7 @@ class App:
     def _worker_line(self, rec_dir, line):
         if self.state != "processing" or rec_dir != self.recorder.dir:
             return
+        self._build_heard = time.monotonic()
         if line.startswith("STAGE "):
             _, frac, text = line.split(" ", 2)
             self.hud.show("processing", "Building your recording", text, progress=float(frac))
@@ -1587,18 +1808,24 @@ class App:
 
     def _deliver(self, rec_dir, ok):
         if not ok:
-            self.hud.show("error", "Couldn't build the recording", "See screen-explain.log", hold=5)
+            self.hud.show("error", "Couldn't build the recording", "See screen-explain.log beside the recordings folder",
+                          hold=5)
             return
         # Just the video as a file: pasting attaches it in Claude, ChatGPT and other chat apps.
         # The text is a fallback for apps that only take text.
-        with open(os.path.join(rec_dir, "message.txt"), encoding="utf-8") as f:
-            set_clipboard(f.read(), [os.path.join(rec_dir, "preview.mp4")])
+        if not self._to_clipboard(rec_dir):
+            log("built %s but couldn't put it on the clipboard" % rec_dir)
+            return self._clipboard_busy()
         focused = bring_to_front(self.return_hwnd)
         if not focused and CONFIG["focus_window_title"]:
             focused = focus_window(CONFIG["focus_window_title"])
         s = int(round(self.duration))
-        self.hud.show("done", "Recording is on your clipboard",
-                      "Paste it into any chat with %s · %d:%02d" % (PASTE_KEYS, s // 60, s % 60), hold=4.5)
+        if self.recorder.no_mic:
+            self.hud.show("done", "Recording is on your clipboard",
+                          "No microphone found, so it has no voice · %d:%02d" % (s // 60, s % 60), hold=6)
+        else:
+            self.hud.show("done", "Recording is on your clipboard",
+                          "Paste it into any chat with %s · %d:%02d" % (PASTE_KEYS, s // 60, s % 60), hold=4.5)
         log("bundle ready %s (returned to start window: %s)" % (rec_dir, focused))
 
     def run(self):
@@ -1606,8 +1833,14 @@ class App:
 
 
 def models_cached():
-    hub = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
-    return os.path.isdir(os.path.join(hub, "models--Systran--faster-whisper-small.en"))
+    """True once the speech model has fully downloaded (a folder alone can be an interrupted download)."""
+    hub = os.environ.get("HF_HUB_CACHE") or os.path.join(
+        os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface"), "hub")
+    snaps = os.path.join(hub, "models--Systran--faster-whisper-small.en", "snapshots")
+    try:
+        return any(os.path.exists(os.path.join(snaps, s, "model.bin")) for s in os.listdir(snaps))
+    except OSError:
+        return False
 
 
 def selftest(seconds=5):
@@ -1697,10 +1930,18 @@ def main():
             print("Lookhere is already running")
             return
     else:
-        mutex = kernel32.CreateMutexW(None, False, "Local\\screen-explain-single-instance")
-        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # plain windll can lose the error code
+        k32.CreateMutexW.restype = wt.HANDLE
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
+        ctypes.set_last_error(0)
+        mutex = k32.CreateMutexW(None, False, "Local\\screen-explain-single-instance")
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
             print("Lookhere is already running")
             return
+    try:
+        os.makedirs(CONFIG["recordings_dir"], exist_ok=True)
+    except OSError as e:
+        log("can't create the recordings folder %s: %r" % (CONFIG["recordings_dir"], e))
     cleanup_old()
     App().run()
     del mutex

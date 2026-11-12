@@ -15,6 +15,7 @@ sys.path.insert(0, HERE)
 import paths  # noqa: E402
 
 OUT = os.path.join(HERE, "licenses")
+ISSUES = "https://github.com/younggovita/lookhere/issues"
 SITE = (os.path.join(HERE, "venv", "lib", "python%d.%d" % sys.version_info[:2], "site-packages") if paths.MAC
         else os.path.join(HERE, "venv", "Lib", "site-packages"))
 
@@ -90,8 +91,9 @@ def main():
     gpl = os.path.join(os.path.dirname(os.path.dirname(exe)), "LICENSE")
     if paths.MAC:  # the Mac build ships no LICENSE file; pystray carries the same GPL v3 text
         gpl = next(iter(glob.glob(os.path.join(SITE, "pystray-*.dist-info", "COPYING"))), "")
-    if os.path.exists(gpl):
-        shutil.copyfile(gpl, os.path.join(OUT, "ffmpeg-LICENSE-GPLv3.txt"))
+    if not os.path.exists(gpl):
+        sys.exit("GPL v3 text not found (looked at %r): the notices would name a file that isn't there" % gpl)
+    shutil.copyfile(gpl, os.path.join(OUT, "ffmpeg-LICENSE-GPLv3.txt"))
     origin = ("This is the unmodified static macOS (Apple Silicon) build shipped in the imageio-ffmpeg package,\n"
               "https://github.com/imageio/imageio-ffmpeg." if paths.MAC else
               "This is the unmodified Windows build from https://www.gyan.dev/ffmpeg/builds/.")
@@ -104,9 +106,17 @@ def main():
         origin,
         "Source code: FFmpeg %s source is at https://github.com/FFmpeg/FFmpeg/releases/tag/n%s" % (number, number),
         "and https://ffmpeg.org/download.html; the build's configuration and the versions of its",
-        "external libraries are listed in ffmpeg-build-configuration.txt. On request, the author of",
-        "Lookhere will provide a copy of the corresponding source code for at least three years",
-        "from the date of distribution.",
+        "external libraries are listed in ffmpeg-build-configuration.txt. On request (open an issue at",
+        "%s), the author of Lookhere will provide a copy of the" % ISSUES,
+        "corresponding source code for at least three years from the date of distribution.",
+        "",
+        "FFmpeg libraries inside PyAV",
+        "----------------------------",
+        "The PyAV package (\"av\" below) carries its own copies of the FFmpeg libraries, built with",
+        "x264 and x265, which makes those copies GPL (version 2 or later; the GPL v3 text is in",
+        "ffmpeg-LICENSE-GPLv3.txt). They ship unmodified, exactly as published in the PyAV wheel on",
+        "https://pypi.org/project/av/. Their build scripts and source links are at",
+        "https://github.com/PyAV-Org/pyav-ffmpeg; the same source offer as above applies.",
         "",
     ]
     with open(os.path.join(OUT, "ffmpeg-build-configuration.txt"), "w", encoding="utf-8") as f:

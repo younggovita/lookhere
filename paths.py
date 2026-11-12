@@ -1,6 +1,6 @@
 """Where Lookhere's files live, the same code whether it runs from source or as the packaged app.
 
-From source (your copy in tools/screen-explain): everything lives next to the code.
+From source: everything lives next to the code.
 Packaged (Lookhere.exe from the installer): bundled read-only files sit in the app's _internal
 folder; recordings, logs and config.json go to %LOCALAPPDATA%\\Lookhere, so updating or
 reinstalling the app never touches them.

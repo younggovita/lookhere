@@ -1,0 +1,15 @@
+# Running Lookhere from source (see DEVELOPING.md). Versions are the ones releases are built with.
+faster-whisper==1.2.1
+mss==10.2.0
+numpy==2.5.4
+pillow==13.0.0
+pynput==1.8.2
+pystray==0.19.5
+sounddevice==0.5.6
+soundfile==0.14.0
+truststore==0.10.5; sys_platform == "darwin"
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-ScreenCaptureKit; sys_platform == "darwin"
+# building the installer / the Mac app
+pyinstaller==6.22.3

@@ -9,11 +9,13 @@ INSTALL
 1. Double-click the Lookhere-Setup file (Lookhere-Setup-<version>.exe).
 2. Windows may say "Windows protected your PC". This happens because the app isn't
    code-signed. Click "More info", then "Run anyway". It only asks once.
-3. Follow the installer. Tick "Start Lookhere when Windows starts" if you want it always ready.
+3. Follow the installer. "Start Lookhere when Windows starts" is ticked so it's always ready;
+   untick it if you'd rather start it yourself.
 4. The first time it opens, Lookhere downloads its speech model (about 460 MB). A small
    bar at the top of the screen shows this. It only happens once.
 
-You need Windows 10 or 11 (64-bit) and a microphone.
+You need Windows 10 or 11 (64-bit). A microphone is what makes it useful, but without one
+Lookhere still records the screen.
 
 
 HOW TO USE IT
@@ -25,7 +27,7 @@ HOW TO USE IT
    and press Ctrl+V.
 
 While recording:
-  Ctrl+Alt+P   pause and resume (paused parts are cut out)
+  Ctrl+Alt+P   pause and resume (paused parts are cut out of the video you paste)
   Ctrl+Alt+M   draw on the screen (or click the pencil on the bar), drag to draw
   Esc          cancel and throw the recording away
 
@@ -39,15 +41,24 @@ Lookhere lives in the system tray (bottom right, you may need to click the ^ arr
 
 
 GOOD TO KNOW
-- Everything stays on your PC. Nothing is uploaded unless you paste it somewhere.
+- Your recordings stay on your PC. Nothing is uploaded unless you paste it somewhere.
+- Lookhere only goes online to check for a new version (a few times a day) and, once, to
+  download its speech model. No accounts, no tracking.
 - Anything on your screen while recording is in the video, so close private stuff first.
-- Recordings older than 30 days are deleted automatically.
-- To uninstall, use Windows Settings > Apps > Installed apps > Lookhere.
+- It understands spoken English only for now. The video works in any language.
+- Recordings older than 30 days are deleted automatically (and for good).
+- If your voice isn't picked up: right-click the tray icon > Settings > Microphone > Test.
+  Also check Windows Settings > Privacy & security > Microphone lets desktop apps use it.
+- To uninstall, use Windows Settings > Apps > Installed apps > Lookhere. Your recordings
+  and settings are kept: to remove them too, delete the folder
+  %LOCALAPPDATA%\Lookhere (paste that into File Explorer's address bar).
+- Something not working? Tell us at https://github.com/younggovita/lookhere/issues
 - Licences for the parts Lookhere is built on are in Start menu > Lookhere licences.
 
 
 ON A MAC
-You need a Mac with Apple Silicon (M1 or later) running macOS 15 or later, and a microphone.
+You need a Mac with Apple Silicon (M1 or later) running macOS 15 or later. A microphone
+is what makes it useful, but Lookhere records the screen without one.
 
 1. Open the Lookhere .dmg file (Lookhere-<version>-mac.dmg) and drag Lookhere into the
    Applications folder.
@@ -66,4 +77,6 @@ You need a Mac with Apple Silicon (M1 or later) running macOS 15 or later, and a
 
 On a Mac the shortcuts use Ctrl+Option instead of Ctrl+Alt (Ctrl+Option+H to record),
 and you paste with Cmd+V. When an update is out, click the menu bar icon, then "Update to".
-To uninstall, quit Lookhere and drag it from Applications to the Bin.
+To uninstall, switch off "Open at login" in Lookhere's Settings, quit Lookhere and drag it
+from Applications to the Bin. Recordings and settings stay in
+~/Library/Application Support/Lookhere until you delete that folder.

@@ -58,7 +58,7 @@ def static_ffmpeg():
 def identity():
     """The Developer ID Application identity's name, or None (ad hoc). LOOKHERE_SIGN_ID overrides."""
     if os.environ.get("LOOKHERE_SIGN_ID"):
-        return os.environ["LOOKHERE_SIGN_ID"]
+        return None if os.environ["LOOKHERE_SIGN_ID"] == "-" else os.environ["LOOKHERE_SIGN_ID"]
     out = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True).stdout
     names = [line.split('"')[1] for line in out.splitlines() if '"Developer ID Application:' in line]
     return names[0] if names else None
@@ -81,7 +81,7 @@ def build(version):
     def data(path, dest="."):
         return ["--add-data", "%s:%s" % (path, dest)]
     run([PY, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", "Lookhere",
-         "--osx-bundle-identifier", "com.lookhere.app",
+         "--osx-bundle-identifier", os.environ.get("LOOKHERE_BUNDLE_ID", "com.lookhere.app"),  # test builds: own TCC rows
          *(["--codesign-identity", ident, "--osx-entitlements-file", ENTITLEMENTS] if ident else []), "--icon", os.path.join(HERE, "lookhere.ico"),
          "--distpath", os.path.join(WORK, "app"), "--workpath", os.path.join(WORK, "tmp"), "--specpath", WORK,
          *data(os.path.join(HERE, "ding.wav")), *data(os.path.join(HERE, "VERSION")),
@@ -95,6 +95,11 @@ def build(version):
          "--exclude-module", "nvidia", "--exclude-module", "PyInstaller", "--exclude-module", "imageio_ffmpeg",
          os.path.join(HERE, "screen_explain.py")])
     app = os.path.join(WORK, "app", "Lookhere.app")
+    # Compiled leftovers inside package metadata carry the build machine's paths: don't ship them.
+    for root, dirs, _ in os.walk(app):
+        if ".dist-info" in root and "__pycache__" in dirs:
+            shutil.rmtree(os.path.join(root, "__pycache__"), ignore_errors=True)
+            dirs.remove("__pycache__")
 
     info = os.path.join(app, "Contents", "Info.plist")
     with open(info, "rb") as f:

@@ -265,7 +265,10 @@ class HistoryWindow:
         self.count.pack(side="left", padx=12, pady=(8, 0))
         Pill(head, "Open folder", lambda: open_path(app_root(app)), p, p["bg"]).pack(side="right")
 
-        self.canvas = tk.Canvas(self.top, bg=hexc(p["bg"]), highlightthickness=0, bd=0)
+        # Mac: scroll in small pixel steps (a trackpad sends many small deltas; the default unit is a
+        # tenth of the window, so one swipe jumped pages)
+        self.canvas = tk.Canvas(self.top, bg=hexc(p["bg"]), highlightthickness=0, bd=0,
+                                **({"yscrollincrement": 4} if paths.MAC else {}))
         self.canvas.pack(fill="both", expand=True, padx=(24, 14), pady=(0, 18))
         self.list = tk.Frame(self.canvas, bg=hexc(p["bg"]))
         self.list_id = self.canvas.create_window((0, 0), window=self.list, anchor="nw")
@@ -280,6 +283,8 @@ class HistoryWindow:
         if self.top.winfo_exists():
             # Windows sends 120 per notch; a Mac sends small numbers (often 1)
             if not e.delta:
+                return
+            if paths.MAC and e.state & 1:  # Tk sends a trackpad's sideways movement as Shift+wheel
                 return
             step = -e.delta if paths.MAC else -e.delta / 120
             self.canvas.yview_scroll(int(step) or (1 if step > 0 else -1), "units")

@@ -503,6 +503,7 @@ class Recorder:
         self.video = self.stream = self.audio_file = None
         self.audio_thread = self.capture_thread = self.mouse_listener = None
         self.no_mic = self.audio_dead = False
+        self.peak, self.heard = 0.0, 0  # loudest sample and samples received (Mac: pure silence = mic blocked)
         try:
             self._begin()
         except BaseException:
@@ -580,6 +581,18 @@ class Recorder:
             self.requests.put((kind, self.elapsed(), None))
 
     @property
+    def screen_blocked(self):
+        """Mac: the Screen Recording permission is off (the video can only show the wallpaper)."""
+        return bool(paths.MAC and self.video is not None and self.video.error
+                    and "no screen access" in self.video.error)
+
+    @property
+    def mic_blocked(self):
+        """Mac: the mic opened but sends exact zeros, which is what macOS gives an app whose
+        Microphone permission is off (a real mic always picks up some noise)."""
+        return bool(paths.MAC and not self.no_mic and self.heard > 2 * self.samplerate and self.peak == 0.0)
+
+    @property
     def armed(self):
         """True once the screen video is live (or will never be)."""
         return self.video is None or self.video.start_mono is not None or self.video.ended()
@@ -593,6 +606,9 @@ class Recorder:
             return
         self.audio_q.put(data.copy())
         self.level = level_of(data)
+        self.heard += len(data)
+        if self.peak == 0.0:
+            self.peak = float(np.abs(data).max())
 
     def _audio_writer(self):
         audio_file = self.audio_file
@@ -1266,7 +1282,9 @@ class App:
             elif r.drawing:
                 self.hud.show("draw", "Drawing", right=timer)
             elif r.armed:
-                self.hud.show("recording", "Recording, no mic" if r.no_mic else "Recording", right=timer)
+                title = ("Screen blocked" if r.screen_blocked else "Mic blocked" if r.mic_blocked
+                         else "Recording, no mic" if r.no_mic else "Recording")
+                self.hud.show("recording", title, right=timer)
             else:
                 self.hud.show("arming", "Starting")
 
@@ -1820,6 +1838,13 @@ class App:
         if not focused and CONFIG["focus_window_title"]:
             focused = focus_window(CONFIG["focus_window_title"])
         s = int(round(self.duration))
+        r = self.recorder
+        if r.screen_blocked or r.mic_blocked:  # Mac: say which permission to switch on
+            self.hud.show("error", "Lookhere can't see the screen" if r.screen_blocked else "Lookhere can't hear the mic",
+                          "System Settings > Privacy & Security > %s: switch Lookhere on"
+                          % ("Screen & System Audio Recording" if r.screen_blocked else "Microphone"), hold=9)
+            log("bundle ready %s, but %s permission is off" % (rec_dir, "screen" if r.screen_blocked else "mic"))
+            return
         if self.recorder.no_mic:
             self.hud.show("done", "Recording is on your clipboard",
                           "No microphone found, so it has no voice · %d:%02d" % (s // 60, s % 60), hold=6)

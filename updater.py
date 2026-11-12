@@ -21,6 +21,8 @@ import urllib.request
 import paths
 
 SUFFIX = ".dmg" if paths.MAC else ".exe"  # which release asset this platform installs
+TEAM_ID = "UZR4NYVG7J"  # Apple Developer ID team that signs the Mac app
+TEAM_REQ = '=anchor apple generic and certificate leaf[subject.OU] = "%s"' % TEAM_ID  # codesign -R: leading "=" means inline text, not a file
 
 API = "https://api.github.com/repos/%s/releases/latest"
 
@@ -156,8 +158,12 @@ def _install_mac(dmg):
             subprocess.run(["ditto", os.path.join(mount, "Lookhere.app"), staged], check=True, capture_output=True)
         except subprocess.CalledProcessError:
             raise ValueError("Can't write to %s" % os.path.dirname(app))
+        # A Developer ID copy only accepts an update signed by the same team; an ad hoc test build
+        # (no team) just checks the update's signature is intact.
+        signed = subprocess.run(["codesign", "--verify", "-R", TEAM_REQ, app], capture_output=True).returncode == 0
+        check = ["codesign", "--verify", "--deep", "--strict"] + (["-R", TEAM_REQ] if signed else []) + [staged]
         try:
-            subprocess.run(["codesign", "--verify", "--deep", staged], check=True, capture_output=True)
+            subprocess.run(check, check=True, capture_output=True)
         except subprocess.CalledProcessError:
             subprocess.run(["rm", "-rf", staged])
             raise ValueError("The downloaded update is damaged")

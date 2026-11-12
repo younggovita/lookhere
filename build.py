@@ -131,14 +131,14 @@ def publish(files, version, notes):
                            capture_output=True, text=True)
     if found.returncode != 0:
         notes = notes or "Lookhere " + version
-        if mac and "Open Anyway" not in notes:
+        if mac and MAC_NOTES not in notes:
             notes += "\n\n" + MAC_NOTES
         run(["gh", "release", "create", tag, *upload, "--repo", repo, "--title", "Lookhere " + version,
              "--notes", notes])
     else:
         run(["gh", "release", "upload", tag, *upload, "--repo", repo, "--clobber"])
         body = json.loads(found.stdout).get("body") or ""
-        if mac and "Open Anyway" not in body:
+        if mac and MAC_NOTES not in body:
             run(["gh", "release", "edit", tag, "--repo", repo, "--notes", (body + "\n\n" + MAC_NOTES).strip()])
     print("Published %s to %s %s" % (", ".join(os.path.basename(p) for p in files), repo, tag))
 

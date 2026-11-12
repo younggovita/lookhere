@@ -275,6 +275,7 @@ class HistoryWindow:
         self.top.bind_all("<MouseWheel>", self._wheel)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self._width, self._pills, self._bg = 700, {}, None
+        self._min_set = False
         self._glide, self._target = None, 0.0  # Mac: smooth scrolling (see _wheel)
         self.recs, self.images = [], []
         self.refresh()
@@ -380,6 +381,7 @@ class HistoryWindow:
         W = max(400, self._width)
         if not self.recs:
             return self._empty(W)
+        self._fit_minsize()
         if self._bg is None or self._bg.width() != W:
             self._bg = ImageTk.PhotoImage(round_rect(W, H, p["card"], p["edge"]))
         for i, r in enumerate(self.recs):
@@ -403,6 +405,18 @@ class HistoryWindow:
             self._button(x, y, "Delete?" if r["armed"] else "Delete", "armed" if r["armed"] else "danger",
                          lambda r=r: self._delete(r), tag="del%d" % i)
         c.configure(scrollregion=(0, 0, W, 6 + len(self.recs) * (H + 12)))
+
+    def _fit_minsize(self):
+        """Stop the window going narrower than a card's button row (measured with the wider "Delete?")."""
+        if self._min_set or self.top.winfo_width() <= 1 or self.canvas.winfo_width() <= 1:
+            return
+        row = [("Play", "lime", "play"), ("Copy", "plain", None), ("Trim", "plain", None),
+               ("Folder", "plain", None), ("Delete?", "armed", None)]
+        need = 210 + sum(self._pill(*b)[0].width() for b in row) + 6 * (len(row) - 1) + 16
+        chrome = self.top.winfo_width() - self._width  # padding and scrollbar around the cards
+        if 0 < chrome < 200:
+            self.top.minsize(max(600, need + chrome), 380)
+            self._min_set = True
 
     def _empty(self, W):
         c, p = self.canvas, self.p

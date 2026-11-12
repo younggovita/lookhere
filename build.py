@@ -109,11 +109,8 @@ def main():
 
 
 MAC_NOTES = ("Mac (Apple Silicon, macOS 15 or later): open the .dmg and drag Lookhere into Applications. "
-             "It isn't signed by Apple yet, so the first time you open it macOS says it can't check it for "
-             "malware: click Done, then open System Settings > Privacy & Security, scroll down and click "
-             "Open Anyway next to Lookhere, then Open Anyway again. It only asks once. The first recording asks "
-             "for the microphone and Screen Recording; until Lookhere is signed by Apple, macOS asks again "
-             "after each update.")
+             "It's signed and notarised by Apple. The first recording asks for the microphone and Screen "
+             "Recording; updates keep both.")
 
 
 def publish(files, version, notes):

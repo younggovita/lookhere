@@ -62,17 +62,13 @@ is what makes it useful, but Lookhere records the screen without one.
 
 1. Open the Lookhere .dmg file (Lookhere-<version>-mac.dmg) and drag Lookhere into the
    Applications folder.
-2. Open Lookhere from Applications. The first time, macOS says it can't check Lookhere
-   for malware. This happens because the app isn't signed by Apple yet. Click Done.
-3. Open System Settings > Privacy & Security, scroll down to Security, and click
-   "Open Anyway" next to the line about Lookhere. Click "Open Anyway" again and enter
-   your password. It only asks once.
-4. Lookhere lives in the menu bar (top right). The first time you record, macOS asks to
+2. Open Lookhere from Applications. macOS checks it (it's signed and notarised by Apple)
+   and asks whether to open an app downloaded from the internet. Click Open.
+3. Lookhere lives in the menu bar (top right). The first time you record, macOS asks to
    let Lookhere use the microphone (click Allow) and record the screen (open System
    Settings and switch Lookhere on under Screen & System Audio Recording). Then quit
-   Lookhere from its menu and open it again. After each Lookhere update, macOS asks for
-   Screen Recording and the microphone again: switch Lookhere on again the same way.
-5. The first time it opens, Lookhere downloads its speech model (about 460 MB). It only
+   Lookhere from its menu and open it again. Updates keep these permissions.
+4. The first time it opens, Lookhere downloads its speech model (about 460 MB). It only
    happens once.
 
 On a Mac the shortcuts use Ctrl+Option instead of Ctrl+Alt (Ctrl+Option+H to record),

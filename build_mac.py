@@ -6,8 +6,12 @@
 
 PyInstaller bundles the app (no Python needed on the tester's Mac) as a menu bar app with no Dock
 icon (LSUIElement). A static ffmpeg from the imageio-ffmpeg package and the licenses/ folder go in
-with it. The app is signed ad hoc (no Apple Developer ID), so macOS asks testers to allow it once
-under Privacy & Security. Apple Silicon only, macOS 15 or later (ScreenCaptureKit's recording
+with it. With a "Developer ID Application" certificate in the keychain, every binary is signed with
+the hardened runtime (mac-entitlements.plist), and the dmg is signed, notarised by Apple (keychain
+profile "lookhere-notary", made once with `xcrun notarytool store-credentials lookhere-notary`)
+and stapled: testers open it with no Gatekeeper step, and updates keep the Screen Recording and
+Microphone permissions. Without the certificate it falls back to an ad hoc signature, loudly.
+Apple Silicon only, macOS 15 or later (ScreenCaptureKit's recording
 output). Recordings and settings live in ~/Library/Application Support/Lookhere, so replacing the
 app keeps them.
 """
@@ -24,6 +28,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PY = os.path.join(HERE, "venv", "bin", "python")
 WORK = os.path.join(HERE, "build", "mac")
 DATA = os.path.expanduser("~/Library/Application Support/Lookhere")  # paths.DATA in the packaged app
+ENTITLEMENTS = os.path.join(HERE, "mac-entitlements.plist")
+NOTARY_PROFILE = "lookhere-notary"
 
 PLIST = {
     "LSUIElement": True,  # menu bar only, no Dock icon
@@ -49,7 +55,22 @@ def static_ffmpeg():
     return out.stdout.strip()
 
 
+def identity():
+    """The Developer ID Application identity's name, or None (ad hoc). LOOKHERE_SIGN_ID overrides."""
+    if os.environ.get("LOOKHERE_SIGN_ID"):
+        return os.environ["LOOKHERE_SIGN_ID"]
+    out = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True).stdout
+    names = [line.split('"')[1] for line in out.splitlines() if '"Developer ID Application:' in line]
+    return names[0] if names else None
+
+
 def build(version):
+    ident = identity()
+    if ident:
+        print("Signing as", ident)
+    else:
+        print("\n" + "!" * 70 + "\nNo Developer ID Application certificate: AD HOC signature, not notarised.\n"
+              "Testers get the Open Anyway step and lose permissions on every update.\n" + "!" * 70 + "\n")
     shutil.rmtree(WORK, ignore_errors=True)
     os.makedirs(WORK)
     ffmpeg = os.path.join(WORK, "ffmpeg")
@@ -60,7 +81,8 @@ def build(version):
     def data(path, dest="."):
         return ["--add-data", "%s:%s" % (path, dest)]
     run([PY, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", "Lookhere",
-         "--osx-bundle-identifier", "com.lookhere.app", "--icon", os.path.join(HERE, "lookhere.ico"),
+         "--osx-bundle-identifier", "com.lookhere.app",
+         *(["--codesign-identity", ident, "--osx-entitlements-file", ENTITLEMENTS] if ident else []), "--icon", os.path.join(HERE, "lookhere.ico"),
          "--distpath", os.path.join(WORK, "app"), "--workpath", os.path.join(WORK, "tmp"), "--specpath", WORK,
          *data(os.path.join(HERE, "ding.wav")), *data(os.path.join(HERE, "VERSION")),
          *data(os.path.join(HERE, "lookhere.ico")), *data(os.path.join(HERE, "licenses"), "licenses"),
@@ -80,7 +102,11 @@ def build(version):
     plist.update(PLIST, CFBundleShortVersionString=version, CFBundleVersion=version)
     with open(info, "wb") as f:
         plistlib.dump(plist, f)
-    run(["codesign", "--force", "--deep", "--sign", "-", app])  # ad hoc: no Developer ID yet
+    if ident:  # PyInstaller signed every nested binary; the plist edit needs the bundle re-sealed
+        run(["codesign", "--force", "--timestamp", "--options", "runtime", "--entitlements", ENTITLEMENTS,
+             "--sign", ident, app])
+    else:
+        run(["codesign", "--force", "--deep", "--sign", "-", app])
     run(["codesign", "--verify", "--deep", "--strict", app])
 
     stage = os.path.join(WORK, "dmg")
@@ -92,6 +118,19 @@ def build(version):
     dmg = os.path.join(HERE, "dist", "Lookhere-%s-mac.dmg" % version)
     run(["hdiutil", "create", "-volname", "Lookhere " + version, "-srcfolder", stage, "-ov",
          "-format", "UDZO", dmg])
+    if ident and os.environ.get("LOOKHERE_NO_NOTARY"):  # local test builds: signed, not sent to Apple
+        run(["codesign", "--force", "--timestamp", "--sign", ident, dmg])
+        print("LOOKHERE_NO_NOTARY set: signed but NOT notarised; don't publish this dmg")
+    elif ident:
+        run(["codesign", "--force", "--timestamp", "--sign", ident, dmg])
+        run(["xcrun", "notarytool", "submit", dmg, "--keychain-profile", NOTARY_PROFILE, "--wait"])
+        # Stapling only helps a first launch with no internet (Gatekeeper otherwise checks Apple
+        # online). It has failed when Apple's CDN served the wrong TLS certificate for
+        # oscdn.apple.com, so a failed staple warns; the Gatekeeper check below must still pass.
+        if subprocess.run(["xcrun", "stapler", "staple", dmg]).returncode != 0:
+            print("\nWARNING: notarised but the ticket could NOT be stapled; Gatekeeper will check online."
+                  "\nRetry later: xcrun stapler staple %s\n" % dmg)
+        run(["spctl", "-a", "-vv", "-t", "open", "--context", "context:primary-signature", dmg])
     shutil.copyfile(os.path.join(HERE, "INSTALL.txt"), os.path.join(HERE, "dist", "Lookhere - How to install.txt"))
     print("Built %s (%.0f MB)" % (dmg, os.path.getsize(dmg) / 1e6))
     return dmg

@@ -55,6 +55,17 @@ def static_ffmpeg():
     return out.stdout.strip()
 
 
+def notary_auth():
+    """notarytool credentials: the App Store Connect key named in ~/.appstoreconnect/lookhere-notary.json
+    when present (works from launchd, where the keychain profile isn't visible), else the profile."""
+    cfg = os.path.expanduser("~/.appstoreconnect/lookhere-notary.json")
+    if os.path.exists(cfg):
+        import json
+        c = json.load(open(cfg))
+        return ["--key", c["key"], "--key-id", c["key_id"], "--issuer", c["issuer"]]
+    return ["--keychain-profile", NOTARY_PROFILE]
+
+
 def identity():
     """The Developer ID Application identity's name, or None (ad hoc). LOOKHERE_SIGN_ID overrides."""
     if os.environ.get("LOOKHERE_SIGN_ID"):
@@ -128,7 +139,7 @@ def build(version):
         print("LOOKHERE_NO_NOTARY set: signed but NOT notarised; don't publish this dmg")
     elif ident:
         run(["codesign", "--force", "--timestamp", "--sign", ident, dmg])
-        run(["xcrun", "notarytool", "submit", dmg, "--keychain-profile", NOTARY_PROFILE, "--wait"])
+        run(["xcrun", "notarytool", "submit", dmg, *notary_auth(), "--wait"])
         # Stapling only helps a first launch with no internet (Gatekeeper otherwise checks Apple
         # online). It has failed when Apple's CDN served the wrong TLS certificate for
         # oscdn.apple.com, so a failed staple warns; the Gatekeeper check below must still pass.

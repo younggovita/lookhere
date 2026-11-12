@@ -133,8 +133,10 @@ def publish(files, version, notes):
         notes = notes or "Lookhere " + version
         if mac and MAC_NOTES not in notes:
             notes += "\n\n" + MAC_NOTES
+        # Tag the commit that was built (it must be pushed), not whatever main is at by then
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip()
         run(["gh", "release", "create", tag, *upload, "--repo", repo, "--title", "Lookhere " + version,
-             "--notes", notes])
+             "--notes", notes] + (["--target", head] if head else []))
     else:
         run(["gh", "release", "upload", tag, *upload, "--repo", repo, "--clobber"])
         body = json.loads(found.stdout).get("body") or ""

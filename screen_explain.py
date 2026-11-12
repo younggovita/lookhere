@@ -1662,6 +1662,11 @@ def selftest(seconds=5):
 
 
 def main():
+    if paths.MAC and paths.FROZEN:
+        # Libraries start multiprocessing's resource tracker as `<app> -c ...`; without this the
+        # packaged app ran a whole second Lookhere instead, which blocked relaunching after updates.
+        import multiprocessing
+        multiprocessing.freeze_support()
     if "--worker" in sys.argv:  # packaged app: the same exe builds recordings (process.py)
         import process
         sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--worker"]

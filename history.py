@@ -265,18 +265,18 @@ class HistoryWindow:
         self.count.pack(side="left", padx=12, pady=(8, 0))
         Pill(head, "Open folder", lambda: open_path(app_root(app)), p, p["bg"]).pack(side="right")
 
-        # Mac: scroll in small pixel steps (a trackpad sends many small deltas; the default unit is a
-        # tenth of the window, so one swipe jumped pages)
+        # The whole list is drawn as items on this one canvas (no widget per card), so scrolling only
+        # moves pixels: smooth with a trackpad. Mac: small pixel steps (a trackpad sends many small
+        # deltas; the default unit is a tenth of the window, which jumped pages).
         self.canvas = tk.Canvas(self.top, bg=hexc(p["bg"]), highlightthickness=0, bd=0,
-                                **({"yscrollincrement": 4} if paths.MAC else {}))
+                                **({"yscrollincrement": 1} if paths.MAC else {}))
         self.canvas.pack(fill="both", expand=True, padx=(24, 14), pady=(0, 18))
-        self.list = tk.Frame(self.canvas, bg=hexc(p["bg"]))
-        self.list_id = self.canvas.create_window((0, 0), window=self.list, anchor="nw")
-        self.list.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", self._resized)
         self.top.bind_all("<MouseWheel>", self._wheel)
         self.top.protocol("WM_DELETE_WINDOW", self.close)
-        self.images, self.cards, self._width = [], [], 700
+        self._width, self._pills, self._bg = 700, {}, None
+        self._glide, self._target = None, 0.0  # Mac: smooth scrolling (see _wheel)
+        self.recs, self.images = [], []
         self.refresh()
 
     def _wheel(self, e):
@@ -286,16 +286,37 @@ class HistoryWindow:
                 return
             if paths.MAC and e.state & 1:  # Tk sends a trackpad's sideways movement as Shift+wheel
                 return
-            step = -e.delta if paths.MAC else -e.delta / 120
+            if paths.MAC:  # glide to where the fingers say, one small step per frame (60 fps)
+                if self._glide is None:
+                    self._target = self.canvas.canvasy(0)
+                self._target += -e.delta * 4
+                if self._glide is None:
+                    self._glide = self.top.after(16, self._glide_step)
+                return
+            step = -e.delta / 120
             self.canvas.yview_scroll(int(step) or (1 if step > 0 else -1), "units")
 
+    def _glide_step(self):
+        self._glide = None
+        if not self.top.winfo_exists():
+            return
+        c = self.canvas
+        total = float(c.cget("scrollregion").split()[3] or 0) if c.cget("scrollregion") else 0
+        self._target = max(0.0, min(self._target, total - c.winfo_height()))
+        cur = c.canvasy(0)
+        diff = self._target - cur
+        if abs(diff) < 1 or total <= 0:
+            return
+        move = diff * 0.3
+        move = move if abs(move) >= 1 else (1 if diff > 0 else -1)
+        c.yview_moveto((cur + move) / total)
+        self._glide = self.top.after(16, self._glide_step)
+
     def _resized(self, e):
-        self.canvas.itemconfigure(self.list_id, width=e.width - 10)
         w = e.width - 10
         if abs(w - self._width) > 2:
             self._width = w
-            for c in self.cards:
-                c.event_generate("<<Redraw>>")
+            self._layout()
 
     def close(self):
         global _win
@@ -304,86 +325,117 @@ class HistoryWindow:
         _win = None
 
     def refresh(self):
+        """Reload the recordings (thumbnails, lengths) and redraw the list."""
         p = self.p
-        for w in self.list.winfo_children():
-            w.destroy()
-        self.images, self.cards = [], []
-        recs = list_recordings(app_root(self.app))
-        self.count.configure(text="%d saved" % len(recs) if recs else "")
-        if not recs:
-            self._empty()
-        for r in recs:
+        self.recs, self.images = [], []
+        for r in list_recordings(app_root(self.app)):
             try:
-                self._card(r)
+                video = os.path.join(r["dir"], "preview.mp4")
+                r = dict(r, video=video, armed=False,
+                         thumb=ImageTk.PhotoImage(thumbnail(r["dir"], (176, 99), p["card"])),
+                         length=r["length"] if r["length"] is not None else duration_of(video),
+                         trimmed=os.path.exists(os.path.join(r["dir"], "edits.json")))
+                self.recs.append(r)
             except Exception as e:  # one odd folder must not hide the rest
                 _log("history: couldn't show %s: %r" % (r["dir"], e))
+        self.count.configure(text="%d saved" % len(self.recs) if self.recs else "")
+        self._layout()
 
-    def _empty(self):
-        p = self.p
-        box = tk.Frame(self.list, bg=hexc(p["bg"]))
-        box.pack(fill="x", pady=90)
+    def _pill(self, text, kind, icon=None):
+        """(normal, hover) images for a pill button, made once and shared by every card."""
+        key = (text, kind, icon)
+        if key not in self._pills:
+            p = self.p
+            if kind == "lime":
+                normal, hover, fg = p["lime"], tuple(min(255, c + 25) for c in p["lime"]), p["ink"]
+            elif kind == "armed":  # a delete waiting for its second click
+                normal, hover, fg = p["red"], p["red"], (255, 255, 255)
+            else:
+                normal, hover = p["button"], p["button_hover"]
+                fg = p["red"] if kind == "danger" else p["text"]
+            self._pills[key] = (ImageTk.PhotoImage(pill_image(text, normal, fg, icon=icon)),
+                                ImageTk.PhotoImage(pill_image(text, hover, fg, icon=icon)))
+        return self._pills[key]
+
+    def _button(self, x, y, text, kind, command, icon=None, tag=None):
+        """A pill drawn on the canvas at (x, y) bottom-left; hover and click by tag. Returns its width."""
+        c = self.canvas
+        normal, hover = self._pill(text, kind, icon)
+        item = c.create_image(x, y, image=normal, anchor="sw", tags=(tag,) if tag else ())
+        c.tag_bind(item, "<Enter>", lambda e: (c.itemconfigure(item, image=self._pill(*self._btn_state(item))[1]),
+                                              c.configure(cursor="hand2")))
+        c.tag_bind(item, "<Leave>", lambda e: (c.itemconfigure(item, image=self._pill(*self._btn_state(item))[0]),
+                                              c.configure(cursor="")))
+        c.tag_bind(item, "<Button-1>", lambda e: command())
+        self._states[item] = (text, kind, icon)
+        return normal.width()
+
+    def _btn_state(self, item):
+        return self._states[item]
+
+    def _layout(self):
+        c, p, H = self.canvas, self.p, self.CARD_H
+        c.delete("all")
+        self._states = {}
+        W = max(400, self._width)
+        if not self.recs:
+            return self._empty(W)
+        if self._bg is None or self._bg.width() != W:
+            self._bg = ImageTk.PhotoImage(round_rect(W, H, p["card"], p["edge"]))
+        for i, r in enumerate(self.recs):
+            top = 6 + i * (H + 12)
+            c.create_image(0, top, image=self._bg, anchor="nw")
+            c.create_image(16, top + (H - 99) // 2, image=r["thumb"], anchor="nw")
+            hit = c.create_rectangle(16, top + (H - 99) // 2, 192, top + (H - 99) // 2 + 99, outline="", width=0)
+            c.tag_bind(hit, "<Button-1>", lambda e, v=r["video"]: open_path(v))
+            x = 210
+            c.create_text(x, top + 22, text=when_label(r["when"]), anchor="nw", fill=hexc(p["text"]),
+                          font=tkfont(12, True))
+            meta = fmt(r["length"]) + ("  ·  trimmed" if r["trimmed"] else "")
+            c.create_text(W - 20, top + 24, text=meta, anchor="ne", fill=hexc(p["muted"]), font=tkfont(10))
+            c.create_text(x, top + 48, text=r["said"] or "Nothing said", anchor="nw", width=W - x - 24,
+                          fill=hexc(p["muted"]), font=tkfont(10))
+            y = top + H - 18
+            x += self._button(x, y, "Play", "lime", lambda v=r["video"]: open_path(v), icon="play") + 6
+            x += self._button(x, y, "Copy", "plain", lambda d=r["dir"]: self.app.copy_recording(d)) + 6
+            x += self._button(x, y, "Trim", "plain", lambda d=r["dir"]: TrimWindow(self, d)) + 6
+            x += self._button(x, y, "Folder", "plain", lambda d=r["dir"]: open_path(d)) + 6
+            self._button(x, y, "Delete?" if r["armed"] else "Delete", "armed" if r["armed"] else "danger",
+                         lambda r=r: self._delete(r), tag="del%d" % i)
+        c.configure(scrollregion=(0, 0, W, 6 + len(self.recs) * (H + 12)))
+
+    def _empty(self, W):
+        c, p = self.canvas, self.p
         import logo
         img = ImageTk.PhotoImage(logo.draw_logo(logo.IDLE, 72))
         self.images.append(img)
-        tk.Label(box, image=img, bg=hexc(p["bg"])).pack()
-        tk.Label(box, text="No recordings yet", bg=hexc(p["bg"]), fg=hexc(p["text"]),
-                 font=tkfont(14, True)).pack(pady=(16, 4))
-        tk.Label(box, text="Press %s to record. They'll show up here." % self.app.hotkey_label,
-                 bg=hexc(p["bg"]), fg=hexc(p["muted"]), font=tkfont(10)).pack()
+        c.create_image(W // 2, 90, image=img, anchor="n")
+        c.create_text(W // 2, 180, text="No recordings yet", fill=hexc(p["text"]), font=tkfont(14, True), anchor="n")
+        c.create_text(W // 2, 212, text="Press %s to record. They'll show up here." % self.app.hotkey_label,
+                      fill=hexc(p["muted"]), font=tkfont(10), anchor="n")
+        c.configure(scrollregion=(0, 0, W, 300))
 
-    def _card(self, r):
-        p = self.p
-        H = self.CARD_H
-        card = tk.Canvas(self.list, height=H, bg=hexc(p["bg"]), highlightthickness=0, bd=0)
-        card.pack(fill="x", pady=6)
-        self.cards.append(card)
-        thumb = ImageTk.PhotoImage(thumbnail(r["dir"], (176, 99), p["card"]))
-        self.images.append(thumb)
-        video = os.path.join(r["dir"], "preview.mp4")
-        length = r["length"] if r["length"] is not None else duration_of(video)
-        trimmed = os.path.exists(os.path.join(r["dir"], "edits.json"))
-
-        btns = tk.Frame(card, bg=hexc(p["card"]))
-        Pill(btns, "Play", lambda: open_path(video), p, p["card"], "lime", icon="play").pack(side="left")
-        Pill(btns, "Copy", lambda: self.app.copy_recording(r["dir"]), p, p["card"]).pack(side="left", padx=6)
-        Pill(btns, "Trim", lambda: TrimWindow(self, r["dir"]), p, p["card"]).pack(side="left")
-        Pill(btns, "Folder", lambda: open_path(r["dir"]), p, p["card"]).pack(side="left", padx=6)
-        delete = Pill(btns, "Delete", None, p, p["card"], "danger")
-        delete.command = lambda: self._delete(r, delete)
-        delete.pack(side="left")
-
-        def draw(_e=None):
-            W = max(400, self._width)
-            card.delete("all")
-            bg = ImageTk.PhotoImage(round_rect(W, H, p["card"], p["edge"]))
-            card._bg = bg
-            card.create_image(0, 0, image=bg, anchor="nw")
-            card.create_image(16, (H - 99) // 2, image=thumb, anchor="nw")
-            card.tag_bind(card.create_rectangle(16, (H - 99) // 2, 192, (H - 99) // 2 + 99, outline="", width=0),
-                          "<Button-1>", lambda e: open_path(video))
-            x = 210
-            card.create_text(x, 22, text=when_label(r["when"]), anchor="nw", fill=hexc(p["text"]),
-                             font=tkfont(12, True))
-            meta = fmt(length) + ("  ·  trimmed" if trimmed else "")
-            card.create_text(W - 20, 24, text=meta, anchor="ne", fill=hexc(p["muted"]), font=tkfont(10))
-            card.create_text(x, 48, text=r["said"] or "Nothing said", anchor="nw", width=W - x - 24,
-                             fill=hexc(p["muted"]), font=tkfont(10))
-            card.create_window(x, H - 18, window=btns, anchor="sw")
-        card.bind("<<Redraw>>", draw)
-        draw()
-
-    def _delete(self, r, button):
+    def _delete(self, r):
         """First click arms the button (it turns red: "Delete?"); a second click within 3 s deletes."""
-        if getattr(button, "armed", False):
+        if r["armed"]:
             if r["dir"] in _rebuilding or not recycle(r["dir"]):
                 self.app.hud.show("error", "Couldn't delete that recording",
                                   "It's open in another app, or too big for the bin", hold=4)
             self.refresh()
             return
-        button.armed = True
-        button.set_text("Delete?", "armed")
-        self.top.after(3000, lambda: button.winfo_exists() and (setattr(button, "armed", False),
-                                                                button.set_text("Delete", "danger")))
+        r["armed"] = True
+        self._layout_keep_scroll()
+
+        def disarm():
+            if r in self.recs and r["armed"] and self.top.winfo_exists():
+                r["armed"] = False
+                self._layout_keep_scroll()
+        self.top.after(3000, disarm)
+
+    def _layout_keep_scroll(self):
+        top = self.canvas.yview()[0]
+        self._layout()
+        self.canvas.yview_moveto(top)
 
 
 def app_root(app):

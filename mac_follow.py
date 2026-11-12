@@ -72,6 +72,15 @@ def fix_notes(tag, version):
         log("%s: release notes' Mac line updated" % tag)
 
 
+def screen_ready():
+    """The self-test records the screen, which only works while the display is awake and unlocked."""
+    code = ("import Quartz; d = Quartz.CGSessionCopyCurrentDictionary() or {}; "
+            "print(int(not Quartz.CGDisplayIsAsleep(Quartz.CGMainDisplayID()) "
+            "and not d.get('CGSSessionScreenIsLocked', 0)))")
+    p = subprocess.run([os.path.join(CLONE, "venv", "bin", "python"), "-c", code], capture_output=True, text=True)
+    return p.stdout.strip() == "1"
+
+
 def build(tag, version, publish):
     """Check out the tag in the release clone and run build.py there. Returns the build log path."""
     run(["git", "-C", CLONE, "fetch", "--tags", "--force", "--quiet", "origin"])
@@ -108,8 +117,15 @@ def check(dry_run=False):
     has_win = any(n.endswith(".exe") for n in names)
     if dry_run:
         log("%s: dry run (build, sign, notarise, self-test; no publish)" % tag)
-        build(tag, version, publish=False)
+        while not screen_ready():  # wait (up to a day) for Morgan to be at the Mac
+            time.sleep(60)
+        try:
+            build(tag, version, publish=False)
+        except Exception as e:
+            notify("Lookhere Mac auto-release: dry run failed", str(e)[:120])
+            raise
         log("%s: dry run passed" % tag)
+        notify("Lookhere Mac auto-release works", "Dry run of %s built, notarised and self-tested." % tag)
         return
     if has_mac or not has_win:
         return  # in step, or nothing for the Mac to follow yet
@@ -117,6 +133,8 @@ def check(dry_run=False):
     tries = state.get(version, 0)
     if tries == "done" or tries >= MAX_TRIES:
         return
+    if not screen_ready():
+        return  # asleep or locked: try again in 30 minutes (not counted as a failure)
     log("%s: Windows is out, Mac isn't: building (try %d of %d)" % (tag, tries + 1, MAX_TRIES))
     try:
         build(tag, version, publish=True)

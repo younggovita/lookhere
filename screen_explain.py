@@ -1130,6 +1130,12 @@ class App:
         # Errors in Tk callbacks would otherwise vanish (pythonw has no console).
         self.root.report_callback_exception = lambda *a: log("UI error: " + "".join(traceback.format_exception(*a)))
         self.hud = Hud(on_error=log)
+        try:  # where the pill was last dragged to (Alt+drag)
+            ox, oy = CONFIG.get("pill_offset") or (0, 0)
+            self.hud.offset = (float(ox), float(oy))
+        except (TypeError, ValueError):
+            pass
+        self.hud.on_moved = self._pill_moved
         self.themes = (None, None)
         self.tray_state = IDLE
         self._apply_themes()
@@ -1665,11 +1671,20 @@ class App:
 
     # ---------- drawing on screen ----------
     def on_pill(self, x, y):
+        if not paths.MAC:  # only its buttons (or an Alt+drag) take the press; the rest can be drawn on
+            return self.hud.grabs(x, y)
         r = self.hud.pill_rect
         return bool(r and self.hud.pen_button and r[0] <= x <= r[2] and r[1] <= y <= r[3])
 
+    def _pill_moved(self, offset):
+        try:
+            save_setting("pill_offset", [round(offset[0]), round(offset[1])])
+            log("pill moved to offset %d, %d" % (round(offset[0]), round(offset[1])))
+        except Exception as e:
+            log("saving the pill position: %r" % e)
+
     def _pill_click(self, x, y, button, pressed):
-        if not pressed:
+        if not pressed or self.hud.alt_down():  # Alt+drag moves the pill, even from a button
             return
         for name, r in self.hud.buttons.items():
             if r[0] <= x <= r[2] and r[1] <= y <= r[3]:

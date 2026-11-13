@@ -1,6 +1,6 @@
 """The floating status pill: a per-pixel-alpha layered window drawn with PIL.
 
-Click-through, never takes focus, hidden from screen capture (so it never appears in a
+Click-through except on its buttons, never takes focus, hidden from screen capture (so it never appears in a
 recording), and animated at the display's refresh rate on its own thread: fades and slides
 in, eases between widths, spinner, pulsing record dot, live mic meter, progress bar.
 
@@ -123,6 +123,7 @@ if not MAC:
     _proto(user32.SetWindowLongW, ctypes.c_long, wt.HWND, ctypes.c_int, ctypes.c_long)
     _proto(user32.SetWindowPos, wt.BOOL, wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT)
     _proto(winmm.timeBeginPeriod, wt.UINT, wt.UINT)
+    _proto(user32.GetAsyncKeyState, ctypes.c_short, ctypes.c_int)
 
 
 def _font(names, size):
@@ -194,6 +195,13 @@ class Hud:
         self.level_drawn = 0.0
         self.scale = 1.0
         self.anchor = (0, 0, 1920)  # left, top, width of the work area (physical px)
+        self.anchor_h = 1080     # its height
+        self.offset = (0.0, 0.0)  # where the user dragged the pill to, logical px from its usual spot
+        self.on_moved = None     # on_moved(offset) after an Alt+drag ends
+        self._drag = None        # while dragging: cursor position minus offset, physical px
+        self._lb_was = False
+        self._fade = 1.0         # dims while the cursor is on a part that lets clicks through
+        self._base = self._pos = (0, 0)
         self.fps = 0.0
         self._replace = False
         self._lock = threading.Lock()
@@ -338,7 +346,12 @@ class Hud:
                 alpha, dy = k, -12 * (1 - k)
             state = (self.mode, self.title, self.subtitle, self.right, self.progress, self.level)
         clickable = self.pen_button and state[0] in BUTTON_MODES
-        if clickable != self._clickable:  # click-through except while the pencil is offered
+        hover = False
+        if not MAC:  # only the buttons (and an Alt+drag) take the mouse; the rest lets clicks through
+            clickable, hover = self._pointer(clickable)
+        self._fade += ((0.22 if hover else 1.0) - self._fade) * 0.25
+        alpha *= self._fade
+        if clickable != self._clickable:
             self._clickable = clickable
             if MAC:
                 self.overlay.click_through(not clickable)
@@ -355,6 +368,46 @@ class Hud:
         else:
             self._blit(img, px, py, int(255 * alpha))
         return True
+
+    # ---------- mouse (Windows) ----------
+    def alt_down(self):
+        return not MAC and bool(user32.GetAsyncKeyState(0x12) & 0x8000)  # VK_MENU
+
+    def grabs(self, x, y):
+        """True when a press at (x, y) belongs to the pill: on a button, or anywhere on it with Alt."""
+        r = self.pill_rect
+        if not r or not self.visible:
+            return False
+        if self.pen_button and any(b[0] <= x <= b[2] and b[1] <= y <= b[3] for b in self.buttons.values()):
+            return True
+        return self._drag is not None or (self.alt_down() and r[0] <= x <= r[2] and r[1] <= y <= r[3])
+
+    def _pointer(self, buttons_live):
+        """Follow the cursor: run an Alt+drag, and say whether the window should take the mouse
+        right now and whether the cursor is resting on a part that doesn't."""
+        r = self.pill_rect
+        if not r:
+            return False, False
+        pt = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        x, y, s = pt.x, pt.y, self.scale
+        inside = r[0] <= x <= r[2] and r[1] <= y <= r[3]
+        on_button = buttons_live and any(b[0] <= x <= b[2] and b[1] <= y <= b[3] for b in self.buttons.values())
+        alt = self.alt_down()
+        down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)  # VK_LBUTTON
+        if self._drag is not None:
+            if down:
+                self.offset = ((x - self._drag[0]) / s, (y - self._drag[1]) / s)
+            else:  # dropped: keep where it actually sits (it can't leave the screen)
+                self._drag = None
+                self.offset = ((self._pos[0] - self._base[0]) / s, (self._pos[1] - self._base[1]) / s)
+                if self.on_moved:
+                    self.on_moved(self.offset)
+        elif alt and down and not self._lb_was and inside:
+            self._drag = (x - self.offset[0] * s, y - self.offset[1] * s)
+        self._lb_was = down
+        grab = on_button or self._drag is not None or (alt and inside)
+        return grab, inside and not grab
 
     # ---------- layout ----------
     def _place_on_cursor_monitor(self):
@@ -375,6 +428,7 @@ class Hud:
         self.scale = (dx.value or 96) / 96.0
         w = mi.rcWork
         self.anchor = (w.left, w.top, w.right - w.left)
+        self.anchor_h = w.bottom - w.top
 
     def _fonts(self):
         key = round(self.scale * SS, 3)
@@ -505,6 +559,12 @@ class Hud:
         left, top, aw = self.anchor
         px = int(left + (aw - W) / 2)
         py = int(top + (14 + dy) * s - MARGIN * s + 6 * s)
+        if not MAC:  # moved by an Alt+drag, but never off its screen
+            m = int(MARGIN * s)
+            self._base = (px, py - int(dy * s))
+            px = min(max(px + int(self.offset[0] * s), int(left) - m), int(left + aw) - W + m)
+            py = min(max(py + int(self.offset[1] * s), int(top) - m), int(top + self.anchor_h) - H + m)
+            self._pos = (px, py)
         self.buttons = {k: (int(px + b[0]), int(py + b[1]), int(px + b[2]), int(py + b[3])) for k, b in boxes.items()}
         self.pill_rect = (int(px + x0), int(py + y0), int(px + x1), int(py + y0 + PILL_H * s))
         return img, px, py

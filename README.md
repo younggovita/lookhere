@@ -33,8 +33,10 @@ Ctrl+C, are refused.
 A floating pill at the top of the screen you're on shows what's happening: Starting (the screen
 video warms up for a second or two; your voice and clicks are already recording), Recording (timer
 and live mic meter), Paused, Drawing, Building (progress), then "Recording is on your clipboard".
-It never appears in recordings (Windows 10 version 2004 or later). When idle, clicks pass through
-it; while recording it has two buttons (stop and pencil). A black pill in dark mode or a white pill in light mode, lime accents,
+It never appears in recordings (Windows 10 version 2004 or later). Clicks pass through
+it; while recording it has two buttons (stop and pencil), and on Windows only those two take
+clicks: the rest of the pill fades under the cursor and lets you click what's behind it. Hold
+**Alt** and drag the pill to park it somewhere else; it stays there (Windows). A black pill in dark mode or a white pill in light mode, lime accents,
 red only while recording.
 
 No microphone? Lookhere still records the screen and says the recording has no voice.

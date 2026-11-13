@@ -203,6 +203,7 @@ class Hud:
         self._fade = 1.0         # dims while the cursor is on a part that lets clicks through
         self._base = self._pos = (0, 0)
         self._hot = None         # the button under the cursor
+        self._buttons_w = 0.0    # widest the pill has been while its buttons show
         self._spring = {}        # per button: [how far it has popped out 0..1, speed]
         self._spring_t = 0.0
         self.fps = 0.0
@@ -461,13 +462,22 @@ class Hud:
         u = self.scale * SS
         text_w = max(ft.getlength(title), fs.getlength(subtitle)) / u
         w = TEXT_X + text_w + PAD_R
-        if mode in ("recording", "mic"):
+        buttons = self.pen_button and mode in BUTTON_MODES
+        if mode in ("recording", "mic") or buttons:
             w += 46
-        if self.pen_button and mode in BUTTON_MODES:
+        if buttons:
             w += 132
         if right:
             w += fr.getlength("0:00:00" if len(right) > 5 else "00:00") / u + 14
-        return max(300.0, w)
+        w = max(300.0, w)
+        if buttons:
+            # The pill is centred, so a narrower one would slide its buttons sideways: after a
+            # press on pause, the next press in the same place (to resume) landed on stop.
+            # While the buttons show, the pill keeps the level meter's slot and never narrows.
+            w = self._buttons_w = max(w, self._buttons_w)
+        else:
+            self._buttons_w = 0.0
+        return w
 
     # ---------- cached pieces ----------
     def _cap_images(self):

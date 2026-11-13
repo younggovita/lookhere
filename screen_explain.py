@@ -1688,7 +1688,7 @@ class App:
             return
         for name, r in self.hud.buttons.items():
             if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
-                self.events.put({"draw": "draw", "stop": "toggle"}[name])
+                self.events.put({"draw": "draw", "stop": "toggle", "pause": "pause"}[name])
                 return
 
     def toggle_draw(self):

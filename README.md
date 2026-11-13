@@ -21,6 +21,7 @@ and Mac "Open Anyway" prompts and how to uninstall.
 | **Ctrl+Alt+P** | pause / resume (paused stretches are cut out of the result) |
 | **Ctrl+Alt+M** | draw on screen: drag to make lime marks that show in the recording and fade after ~3 s |
 | pencil button on the pill | same as Ctrl+Alt+M: click to draw, click again to stop |
+| pause button on the pill | same as Ctrl+Alt+P: pause, and resume from the lime play arrow |
 | red stop button on the pill | same as Ctrl+Alt+H: finish the recording |
 | **Esc** | cancel and delete the recording, from any app, with no confirmation |
 
@@ -34,8 +35,8 @@ A floating pill at the top of the screen you're on shows what's happening: Start
 video warms up for a second or two; your voice and clicks are already recording), Recording (timer
 and live mic meter), Paused, Drawing, Building (progress), then "Recording is on your clipboard".
 It never appears in recordings (Windows 10 version 2004 or later). Clicks pass through
-it; while recording it has two buttons (stop and pencil), and on Windows only those two take
-clicks: the rest of the pill fades under the cursor and lets you click what's behind it. Hold
+it; while recording it has three buttons (pencil, pause and stop), and on Windows only those take
+clicks (each pops out a little under the cursor): the rest of the pill fades under the cursor and lets you click what's behind it. Hold
 **Alt** and drag the pill to park it somewhere else; it stays there (Windows). A black pill in dark mode or a white pill in light mode, lime accents,
 red only while recording.
 

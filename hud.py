@@ -202,6 +202,9 @@ class Hud:
         self._lb_was = False
         self._fade = 1.0         # dims while the cursor is on a part that lets clicks through
         self._base = self._pos = (0, 0)
+        self._hot = None         # the button under the cursor
+        self._spring = {}        # per button: [how far it has popped out 0..1, speed]
+        self._spring_t = 0.0
         self.fps = 0.0
         self._replace = False
         self._lock = threading.Lock()
@@ -406,6 +409,9 @@ class Hud:
         elif alt and down and not self._lb_was and inside:
             self._drag = (x - self.offset[0] * s, y - self.offset[1] * s)
         self._lb_was = down
+        self._hot = None
+        if on_button and self._drag is None and not alt:
+            self._hot = next(k for k, b in self.buttons.items() if b[0] <= x <= b[2] and b[1] <= y <= b[3])
         grab = on_button or self._drag is not None or (alt and inside)
         return grab, inside and not grab
 
@@ -450,7 +456,7 @@ class Hud:
         if mode in ("recording", "mic"):
             w += 46
         if self.pen_button and mode in BUTTON_MODES:
-            w += 88
+            w += 132
         if right:
             w += fr.getlength("0:00:00" if len(right) > 5 else "00:00") / u + 14
         return max(300.0, w)
@@ -543,10 +549,17 @@ class Hud:
             rx -= max(slot, r_img.width) + 14 * s
         boxes = {}
         if self.pen_button and mode in BUTTON_MODES:
-            for name in ("stop", "draw"):  # right to left: stop sits next to the timer
+            dt = min(0.05, max(0.0, now - self._spring_t))
+            self._spring_t = now
+            for name in ("stop", "pause", "draw"):  # right to left: stop sits next to the timer
                 bx = rx - 16 * s
-                (self._stop_button if name == "stop" else self._pen_button)(img, bx, cy)
-                boxes[name] = (bx - 18 * s, cy - 18 * s, bx + 18 * s, cy + 18 * s)
+                # A button pops out under the cursor on a slightly bouncy spring, so it is felt
+                # the moment the pill stops letting clicks through.
+                sp = self._spring.setdefault(name, [0.0, 0.0])
+                sp[1] += ((1.0 if self._hot == name else 0.0) - sp[0]) * 520 * dt - sp[1] * 24 * dt
+                sp[0] = max(-0.2, min(1.4, sp[0] + sp[1] * dt))
+                self._button(img, name, bx, cy, sp[0], mode == "paused")
+                boxes[name] = (bx - 20 * s, cy - 20 * s, bx + 20 * s, cy + 20 * s)
                 rx -= 44 * s
 
         icon_kind, color = MODES.get(mode, ("dot", GREY))
@@ -569,33 +582,36 @@ class Hud:
         self.pill_rect = (int(px + x0), int(py + y0), int(px + x1), int(py + y0 + PILL_H * s))
         return img, px, py
 
-    def _pen_button(self, img, cx, cy):
-        """Round pencil button: subtle when off, lime when drawing."""
+    def _button(self, img, name, cx, cy, k, paused):
+        """A round button: pencil (lime while drawing), pause (lime play arrow while paused) or a
+        red stop square. k is how far it has popped out under the cursor (0 = resting)."""
         size = 34.0
         patch, d, u = self._patch(size, size)
         c = size / 2 * u
         r = 15 * u
-        if self.pen_on:
+        lit = (name == "draw" and self.pen_on) or (name == "pause" and paused)
+        glow = max(0.0, min(1.0, k))
+        if lit:
             d.ellipse((c - r, c - r, c + r, c + r), fill=ACCENT + (255,))
             ink = (12, 12, 12)
         else:
-            d.ellipse((c - r, c - r, c + r, c + r), fill=TEXT[:3] + (26,))
+            d.ellipse((c - r, c - r, c + r, c + r), fill=TEXT[:3] + (int(26 + 50 * glow),))
             ink = TEXT[:3]
-        self._pen_onto(patch, c, u, ink)
-        s = self.scale
-        self._paste_patch(img, patch, cx - size / 2 * s, cy - size / 2 * s)
-
-    def _stop_button(self, img, cx, cy):
-        """Round stop button: a red square, like a recorder's stop key."""
-        size = 34.0
-        patch, d, u = self._patch(size, size)
-        c = size / 2 * u
-        r = 15 * u
-        d.ellipse((c - r, c - r, c + r, c + r), fill=TEXT[:3] + (26,))
-        k = 5.2 * u
-        d.rounded_rectangle((c - k, c - k, c + k, c + k), radius=1.8 * u, fill=RED + (255,))
-        s = self.scale
-        self._paste_patch(img, patch, cx - size / 2 * s, cy - size / 2 * s)
+        if name == "draw":
+            self._pen_onto(patch, c, u, ink)
+        elif name == "stop":
+            q = 5.2 * u
+            d.rounded_rectangle((c - q, c - q, c + q, c + q), radius=1.8 * u, fill=RED + (255,))
+        elif paused:  # play arrow: resume
+            d.polygon([(c - 3.6 * u, c - 5.6 * u), (c - 3.6 * u, c + 5.6 * u), (c + 5.6 * u, c)], fill=ink + (255,))
+        else:
+            for bx in (-4.6, 1.6):
+                d.rounded_rectangle((c + bx * u, c - 5.2 * u, c + (bx + 3.0) * u, c + 5.2 * u), radius=1.0 * u,
+                                    fill=ink + (255,))
+        grow = (1 + 0.17 * k) * self.scale / (self.scale * SS)
+        w = max(1, round(patch.width * grow))
+        small = patch.resize((w, w), Image.LANCZOS)
+        img.alpha_composite(small, (int(round(cx - w / 2)), int(round(cy - w / 2))))
 
     @staticmethod
     def _pen_glyph(d, c, u, ink):

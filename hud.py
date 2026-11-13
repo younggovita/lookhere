@@ -262,6 +262,7 @@ class Hud:
         ready.set()
         msg = wt.MSG()
         shown = False
+        raised = 0.0
         frames, fps_t = 0, time.monotonic()
         while True:
             while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):  # PM_REMOVE
@@ -272,6 +273,13 @@ class Hud:
                     if not shown:
                         user32.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE
                         shown = True
+                        raised = 0.0
+                    # Windows can leave this window under every app while it still counts as
+                    # always-on-top (seen 13 Nov: pill up but invisible), so put it back on top
+                    # when it appears and once a second after.
+                    if time.monotonic() - raised >= 1.0:
+                        raised = time.monotonic()
+                        self.bring_to_front()
                     frames += 1
                     for _ in range(vsyncs_per_frame):
                         if dwmapi.DwmFlush() != 0:  # wait for the next display refresh (vsync)

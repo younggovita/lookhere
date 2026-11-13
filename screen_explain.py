@@ -13,6 +13,7 @@ import ctypes.wintypes as wt
 import json
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -237,34 +238,60 @@ class ScreenVideo:
         self.proc = tie_to_app(subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                 stderr=open(os.path.join(rec_dir, "ffmpeg.log"), "w"),
                                                 text=True, creationflags=paths.NO_WINDOW))
+        self.path = os.path.join(rec_dir, self.files[0])
         threading.Thread(target=self._read_progress, daemon=True).start()
 
+    STOP_LAG = 0.045  # seconds between sending "q" and ffmpeg's last captured frame (measured: 0.02-0.07)
+
     def _read_progress(self):
-        # The first report with real output time tells us when frame 0 was on screen.
+        # A rough start time from the first report with real output time. It is late by however long
+        # frames sit in the encoder (over a second with NVENC), so stop() replaces it when it can.
         for line in self.proc.stdout:
-            if self.start_mono is None and line.startswith("out_time_us="):
+            if line.startswith("out_time_us="):
                 try:
                     us = int(line.split("=", 1)[1])
                 except ValueError:
                     continue
-                if us > 0:
+                if us > 0 and self.start_mono is None:
                     self.start_mono = time.monotonic() - us / 1e6
 
     def ended(self):
         return self.proc.poll() is not None
 
     def stop(self):
+        asked = None
         try:
+            asked = time.monotonic()
             self.proc.stdin.write("q")
             self.proc.stdin.flush()
             self.proc.wait(timeout=10)
         except Exception:
+            asked = None
             self.proc.kill()
             try:
                 self.proc.wait(timeout=5)
             except Exception:
                 pass
+        # Stopped cleanly: every captured frame was written and the last one was on screen when ffmpeg
+        # saw the "q". Counting the video's length back from there gives when frame 0 was on screen,
+        # free of the encoder's delay (which put the preview's picture a second behind the voice).
+        if asked is not None and self.proc.returncode == 0:
+            length = self._length()
+            if length > 0:
+                self.start_mono = asked + self.STOP_LAG - length
         return self.proc.returncode
+
+    def _length(self):
+        """Seconds of video written, from the file (the last progress report stops 0.2 s short)."""
+        try:
+            r = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", self.path], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=10, creationflags=paths.NO_WINDOW)
+            m = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr)
+            if m:
+                return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        except Exception as e:
+            log("couldn't read the screen video's length: %r" % e)
+        return 0.0
 
 
 class MacScreenVideo:

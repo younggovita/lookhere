@@ -1399,6 +1399,8 @@ class App:
                 self.test_mic()
         elif isinstance(ev, tuple) and ev[0] == "mic_result":
             self._mic_result(*ev[1:])
+        elif isinstance(ev, tuple) and ev[0] == "pill_moved":
+            self._save_pill_offset(ev[1])
         elif isinstance(ev, tuple) and ev[0] == "draw_style":
             save_setting("draw_style", ev[1])
             import draw
@@ -1704,6 +1706,10 @@ class App:
         return bool(r and self.hud.pen_button and r[0] <= x <= r[2] and r[1] <= y <= r[3])
 
     def _pill_moved(self, offset):
+        # Called on the pill's own thread: hand it to the Tk thread, the one that writes config.json.
+        self.events.put(("pill_moved", (offset[0], offset[1])))
+
+    def _save_pill_offset(self, offset):
         try:
             save_setting("pill_offset", [round(offset[0]), round(offset[1])])
             log("pill moved to offset %d, %d" % (round(offset[0]), round(offset[1])))

@@ -53,11 +53,12 @@ venv\Scripts\python.exe build.py --bump --test --publish --notes "What changed"
 ```
 - `--bump` raises the version; `--test` installs the new installer into a temp folder, runs the
   self-test from the installed copy and uninstalls it; `--publish` creates GitHub release
-  `v<version>` (repo in `release.json`) with the installer and its SHA-256, or adds the files to
-  that release if it already exists.
+  `v<version>` (repo in `release.json`) as a draft with the installer and its SHA-256, or adds the
+  files to that draft if it already exists.
 - Mac: `venv/bin/python build.py --mac --test --publish` on a Mac, for the same version, adds the
-  `.dmg` to the same release. A release must hold both platforms' files: the updater ignores a
-  release that lacks its own platform's installer.
+  `.dmg` to the same draft. Whichever platform uploads second makes the release live: `--publish`
+  publishes the draft once it holds both an `.exe` and a `.dmg`. Releases are immutable once
+  published (repo setting), so nothing can be added or swapped after that.
 - Installed copies check the latest release at startup and every 3 hours, offer "Update to x.y.z",
   download it, check its SHA-256, install (keeping recordings and settings) and restart. The
   SHA-256 guards against a corrupt download; trust in the release itself rests on the GitHub

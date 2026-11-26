@@ -7,6 +7,7 @@
     venv/bin/python build.py --mac [--bump] [--test] [--publish]
         on a Mac: dist/Lookhere-<version>-mac.dmg (menu bar app, ad-hoc signed); --test runs the
         self-test from the built app; --publish adds the dmg to the v<version> release
+        (releases start as a draft and go live once both the .exe and the .dmg are on it)
 
 Steps: PyInstaller bundles the app (one folder, no Python needed on the target PC), ffmpeg.exe
 and the ding go in with it, then Inno Setup wraps that folder into one installer. Speech runs
@@ -135,14 +136,27 @@ def publish(files, version, notes):
             notes += "\n\n" + MAC_NOTES
         # Tag the commit that was built (it must be pushed), not whatever main is at by then
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip()
+        # A draft: nobody sees it (and the updater ignores it) until both platforms have uploaded.
+        # Releases are immutable once published, so the second platform can't add its file later.
         run(["gh", "release", "create", tag, *upload, "--repo", repo, "--title", "Lookhere " + version,
-             "--notes", notes] + (["--target", head] if head else []))
+             "--notes", notes, "--draft"] + (["--target", head] if head else []))
     else:
         run(["gh", "release", "upload", tag, *upload, "--repo", repo, "--clobber"])
         body = json.loads(found.stdout).get("body") or ""
         if mac and MAC_NOTES not in body:
             run(["gh", "release", "edit", tag, "--repo", repo, "--notes", (body + "\n\n" + MAC_NOTES).strip()])
-    print("Published %s to %s %s" % (", ".join(os.path.basename(p) for p in files), repo, tag))
+    state = json.loads(subprocess.run(["gh", "release", "view", tag, "--repo", repo, "--json", "isDraft,assets"],
+                                      capture_output=True, text=True, check=True).stdout)
+    names = [a["name"] for a in state["assets"]]
+    both = any(n.endswith(".exe") for n in names) and any(n.endswith(".dmg") for n in names)
+    if state["isDraft"] and both:
+        run(["gh", "release", "edit", tag, "--repo", repo, "--draft=false", "--latest"])
+        print("Published %s: both installers are up, release is live" % tag)
+    elif state["isDraft"]:
+        print("Uploaded %s to draft %s %s; it goes live when the other platform publishes"
+              % (", ".join(os.path.basename(p) for p in files), repo, tag))
+    else:
+        print("Published %s to %s %s" % (", ".join(os.path.basename(p) for p in files), repo, tag))
 
 
 def test_install(setup):

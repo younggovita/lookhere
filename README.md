@@ -71,7 +71,7 @@ or finishes a recording.
 - Speech is transcribed on your computer (Whisper, English only for now).
 - Lookhere contacts the internet for two things only:
   1. **Update check** (installed copies): one request to GitHub's releases API at startup and
-     every 6 hours. The installer is downloaded only when you click Update. Turn it off with
+     every 3 hours. The installer is downloaded only when you click Update. Turn it off with
      `"check_updates": false` in `config.json`.
   2. **Speech model**: downloaded once from Hugging Face on first run (about 460 MB). After that
      it loads from disk with no network call.

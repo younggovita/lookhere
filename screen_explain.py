@@ -1778,7 +1778,7 @@ class App:
             log("clearing old update downloads: %r" % e)
         last = None
         while True:  # follows the setting: switching it back on resumes checks without a restart
-            if CONFIG["check_updates"] and (last is None or time.monotonic() - last >= 6 * 3600):
+            if CONFIG["check_updates"] and (last is None or time.monotonic() - last >= 3 * 3600):
                 last = time.monotonic()
                 self._check_update()
             time.sleep(60)

@@ -58,7 +58,7 @@ venv\Scripts\python.exe build.py --bump --test --publish --notes "What changed"
 - Mac: `venv/bin/python build.py --mac --test --publish` on a Mac, for the same version, adds the
   `.dmg` to the same release. A release must hold both platforms' files: the updater ignores a
   release that lacks its own platform's installer.
-- Installed copies check the latest release at startup and every 6 hours, offer "Update to x.y.z",
+- Installed copies check the latest release at startup and every 3 hours, offer "Update to x.y.z",
   download it, check its SHA-256, install (keeping recordings and settings) and restart. The
   SHA-256 guards against a corrupt download; trust in the release itself rests on the GitHub
   account, so keep two-factor sign-in on it.

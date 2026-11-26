@@ -12,7 +12,7 @@ Windows 10/11 (64-bit) and macOS 15+ (Apple Silicon).
 Get the latest installer from the [releases page](https://github.com/younggovita/lookhere/releases/latest):
 `Lookhere-Setup-<version>.exe` for Windows, `Lookhere-<version>-mac.dmg` for a Mac.
 [INSTALL.txt](INSTALL.txt) is the step-by-step guide, including the "Windows protected your PC"
-and Mac "Open Anyway" prompts and how to uninstall.
+prompts, the Mac "Open" prompt and how to uninstall.
 
 ## While recording
 | Key (Windows) | Does |

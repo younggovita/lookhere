@@ -9,6 +9,7 @@ INSTALL
 1. Double-click the Lookhere-Setup file (Lookhere-Setup-<version>.exe).
 2. Windows may say "Windows protected your PC". This happens because the app isn't
    code-signed. Click "More info", then "Run anyway". It only asks once.
+   Your browser may also warn that the file "isn't commonly downloaded": choose Keep.
 3. Follow the installer. "Start Lookhere when Windows starts" is ticked so it's always ready;
    untick it if you'd rather start it yourself.
 4. The first time it opens, Lookhere downloads its speech model (about 460 MB). A small

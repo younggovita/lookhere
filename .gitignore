@@ -12,3 +12,7 @@ licenses/
 
 # local dev screenshots, never published
 dev-screenshots/
+
+# local review captures and the Mac source-run lock
+_review/
+.lookhere.lock

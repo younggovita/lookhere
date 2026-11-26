@@ -95,5 +95,5 @@ private window-server property since macOS only lets the front app change the cu
 - If the microphone is unplugged mid-recording the voice just ends; if the screen recorder dies
   mid-recording the pill doesn't say so.
 - Windows 10 before version 2004 can't hide the pill from recordings.
-- Mac: with Screen Recording or Microphone permission off, the app records a slideshow or silence
-  without saying why; INSTALL.txt covers granting them.
+- Mac: with Screen Recording or Microphone permission off, the pill says which one to switch
+  on (screen_blocked / mic_blocked); INSTALL.txt covers granting them.

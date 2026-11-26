@@ -1949,6 +1949,11 @@ def selftest(seconds=5):
     except Exception:
         out["ok"] = False
         out["error"] = traceback.format_exc()
+        if getattr(r, "active", False):  # stop the mic and frame threads first, or they write
+            try:                         # audio.wav and frames_raw/ again after the delete
+                r._halt()
+            except Exception as e:
+                log("selftest cleanup: %r" % e)
         if getattr(r, "video", None) and not r.video.ended():
             r.video.stop()  # don't leave the screen recorder running
         if getattr(r, "dir", None):
